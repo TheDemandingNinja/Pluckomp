@@ -1,3 +1,5 @@
+<p align="center"><img src="docs/pluckomp-banner-960.gif" alt="Pluckomp" width="960"></p>
+
 # Pluckomp
 
 **Pluckomp** is a work-in-progress static recompilation of *Pikmin 4* (Nintendo Switch, 2023) into a native

@@ -16,6 +16,16 @@ from pathlib import Path
 
 MAX_BYTES = 1024 * 1024
 
+# Images under docs/ (README banner, screenshots) may be larger. No blocked game format uses these suffixes.
+DOCS_IMAGE_SUFFIXES = {".gif", ".png", ".jpg", ".jpeg", ".webp", ".svg"}
+DOCS_IMAGE_MAX_BYTES = 8 * 1024 * 1024
+
+
+def size_limit(path: Path) -> int:
+    if path.parts[:1] == ("docs",) and path.suffix.lower() in DOCS_IMAGE_SUFFIXES:
+        return DOCS_IMAGE_MAX_BYTES
+    return MAX_BYTES
+
 # Switch containers and executables, Unreal Engine content, and audio/movie formats.
 BLOCKED_SUFFIXES = {
     # Switch
@@ -61,8 +71,9 @@ def problems_for(path: Path) -> list[str]:
     if not path.is_file():
         return found
     size = path.stat().st_size
-    if size > MAX_BYTES:
-        found.append(f"{size // 1024} KiB, over the {MAX_BYTES // 1024} KiB limit")
+    limit = size_limit(path)
+    if size > limit:
+        found.append(f"{size // 1024} KiB, over the {limit // 1024} KiB limit")
         return found
     data = path.read_bytes()
     if GENERATED_MARKER.encode() in data:
