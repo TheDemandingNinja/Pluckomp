@@ -21,9 +21,10 @@ Edit `config.local.toml` to point at your own game dump and keys.
 ## Steps
 
 1. `python tools/extract.py` - unpack ExeFS and RomFS of the base game and each update into
-   `build/extract/<title id>/v<version>/`, and check the ExeFS against `tools/data/exefs_hashes.json`. `--no-romfs`
-   skips the multi-gigabyte RomFS. Updates' RomFS (a BKTR patch on the base RomFS) is not applied yet; NSZ / XCZ
-   inputs must be decompressed first.
+   `build/extract/<title id>/v<version>/`, and check the ExeFS against `tools/data/exefs_hashes.json`. The RomFS
+   (11 GB) is written for the newest version only; an update's RomFS is rebuilt from the base game, so list the base
+   game too. `--verify` checks the RomFS against its hash tree first, `--no-romfs` skips it. NSZ / XCZ inputs must be
+   decompressed first.
 
 Not implemented yet:
 

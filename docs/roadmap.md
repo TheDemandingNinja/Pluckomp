@@ -6,11 +6,10 @@
 
 ## Milestone 1 - Input
 
-- [x] `tools/extract.py`: ExeFS and RomFS out of the user's NSP / XCI with their own keys (tested on synthetic
-  images only)
+- [x] `tools/extract.py`: ExeFS and RomFS out of the user's NSP / XCI with their own keys
 - [x] Run against a real dump (base XCI v0 with bundled v1.0.1, update NSP v2.0.0)
 - [x] Known-good ExeFS hashes per game version in `tools/data/exefs_hashes.json`
-- [ ] Update RomFS: apply BKTR patches on top of the base RomFS
+- [x] Update RomFS: apply BKTR patches on top of the base RomFS (v2.0.0 passes its full IVFC hash check)
 - [ ] NSZ / XCZ input
 - [ ] Identify which updates exist and pick the primary target version
 

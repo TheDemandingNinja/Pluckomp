@@ -12,6 +12,7 @@ from dataclasses import dataclass
 from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 
 from . import FormatError
+from .bktr import AesCtrExStorage, IndirectStorage, read_bucket_tree, AES_CTR_EX_ENTRY, INDIRECT_ENTRY
 from .keys import Keys
 from .storage import Storage
 
@@ -47,6 +48,14 @@ def ctr_crypt(key: bytes, upper: bytes, offset: int, data: bytes) -> bytes:
     return enc.update(data) + enc.finalize()
 
 
+def ctr_read(storage: Storage, key: bytes, upper: bytes, absolute: int, size: int) -> bytes:
+    """Read and decrypt `size` bytes at absolute NCA offset `absolute`, which need not be 16-byte aligned."""
+    aligned = absolute & ~0xF
+    end = min(-(-(absolute + size) // 16) * 16, storage.size)
+    plain = ctr_crypt(key, upper, aligned, storage.read(aligned, end - aligned))
+    return plain[absolute - aligned:absolute - aligned + size]
+
+
 class Section(Storage):
     """The decrypted bytes of one NCA section."""
 
@@ -63,12 +72,7 @@ class Section(Storage):
             raise FormatError(f"read of {size:#x} at {offset:#x} past the end of a {self.size:#x}-byte section")
         if self._encryption == ENC_NONE:
             return self._nca.read(self._start + offset, size)
-        absolute = self._start + offset
-        aligned = absolute & ~0xF
-        end = min(-(-(absolute + size) // 16) * 16, self._start + self.size)
-        raw = self._nca.read(aligned, end - aligned)
-        plain = ctr_crypt(self._key, self._upper, aligned, raw)
-        return plain[absolute - aligned:absolute - aligned + size]
+        return ctr_read(self._nca, self._key, self._upper, self._start + offset, size)
 
 
 @dataclass
@@ -128,9 +132,65 @@ class Nca:
         upper = info.fs_header[0x140:0x148][::-1]
         return Section(self.storage, info.start, info.size, info.encryption, self._ctr_key, upper)
 
-    def data(self, info: SectionInfo) -> Storage:
-        """The filesystem inside a section, past its hash layers: a PFS0 or a RomFS image."""
-        section = self.open_section(info)
+    def patch_section(self, info: SectionInfo, base: Storage) -> Storage:
+        """An update's RomFS section rebuilt on top of `base`, the base game's decrypted RomFS section."""
+        if info.encryption != ENC_BKTR:
+            raise FormatError(f"section {info.index} is not a patch section")
+        fs = info.fs_header
+        indirect_offset, indirect_size = struct.unpack_from("<QQ", fs, 0x100)
+        ex_offset, ex_size = struct.unpack_from("<QQ", fs, 0x120)
+        upper = fs[0x140:0x148][::-1]
+        # The tables themselves use the section's ordinary counter.
+        tables = Section(self.storage, info.start, info.size, ENC_CTR, self._ctr_key, upper)
+        ex_entries, ex_end = read_bucket_tree(tables, ex_offset, ex_size, fs[0x130:0x140], AES_CTR_EX_ENTRY)
+        if ex_end > info.size:
+            raise FormatError("AesCtrEx table covers more than the section")
+        patch = AesCtrExStorage(self.storage, info.start, self._ctr_key, upper, ex_entries, ex_end)
+        entries, end = read_bucket_tree(tables, indirect_offset, indirect_size, fs[0x110:0x120], INDIRECT_ENTRY)
+        return IndirectStorage(entries, end, base, patch)
+
+    def verify_ivfc(self, info: SectionInfo, section: Storage | None = None, progress=None) -> int:
+        """Check a RomFS section's IVFC hash tree, from the master hash in the fs header down to every data block.
+
+        Returns the number of blocks whose hash does not match. Each level's blocks are hashed with plain SHA-256 into
+        the level above; a short last block is zero-padded to the block size first (checked on retail dumps)."""
+        if info.hash_type != HASH_IVFC:
+            raise FormatError(f"section {info.index} has no IVFC hash tree")
+        if section is None:
+            section = self.open_section(info)
+        hash_data = info.fs_header[0x8:0x100]
+        master_size, layers = struct.unpack_from("<II", hash_data, 0x8)
+        parent = hash_data[0xC0:0xC0 + master_size]
+        bad = 0
+        for level in range(layers - 1):
+            offset, size, log2 = struct.unpack_from("<QQI", hash_data, 0x10 + level * 0x18)
+            block = 1 << log2
+            count = -(-size // block)
+            if len(parent) < count * 32:
+                raise FormatError(f"IVFC level {level} has {count} blocks but only {len(parent) // 32} hashes")
+            keep = level < layers - 2  # every level but the data level holds the next level's hashes
+            data = bytearray()
+            per_read = max(1, (8 << 20) // block)
+            for first in range(0, count, per_read):
+                n = min(per_read, count - first)
+                chunk = section.read(offset + first * block, min(n * block, size - first * block))
+                for i in range(n):
+                    piece = chunk[i * block:(i + 1) * block].ljust(block, b"\0")
+                    if hashlib.sha256(piece).digest() != parent[(first + i) * 32:(first + i + 1) * 32]:
+                        bad += 1
+                if keep:
+                    data += chunk
+                elif progress:
+                    progress(first + n, count)
+            parent = bytes(data)
+        return bad
+
+    def data(self, info: SectionInfo, section: Storage | None = None) -> Storage:
+        """The filesystem inside a section, past its hash layers: a PFS0 or a RomFS image.
+
+        `section` replaces the decrypted section, for a patch section rebuilt by patch_section."""
+        if section is None:
+            section = self.open_section(info)
         hash_data = info.fs_header[0x8:0x100]
         if info.hash_type == HASH_SHA256:
             layers = struct.unpack_from("<I", hash_data, 0x24)[0]
