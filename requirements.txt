@@ -1,1 +1,7 @@
 cryptography>=42
+# recomp/: NSO loading and function discovery
+lz4>=4
+numpy>=1.26
+# tests/diff/: reference ARM64 emulator and disassembler (test-only)
+unicorn>=2.1
+capstone>=5

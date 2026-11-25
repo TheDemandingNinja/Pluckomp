@@ -13,11 +13,14 @@
 - [ ] NSZ / XCZ input
 - [ ] Identify which updates exist and pick the primary target version
 
-## Milestone 2 - Lifter
+## Milestone 2 - Lifter (done)
 
-- Bring in an MIT-licensed ARM64-to-C lifter (TotK Recomp's `recomp/`, LAS Recomp) and note it in
-  `THIRD_PARTY_NOTICES.md`
-- Lift every function in `main`; differential tests pass
+- [x] TotK Recomp's `recomp/` (which builds on LAS Recomp) in `recomp/`, without its TotK-only patch, plugin,
+  spin-wait and hook machinery; noted in `THIRD_PARTY_NOTICES.md`
+- [x] Lift every function in `main`, `subsdk0` and `sdk` of v2.0.0
+- [x] Differential tests against Unicorn pass on Pikmin 4's own code (`tests/diff/`)
+- [ ] Callee-saved registers across setjmp / longjmp and C++ exceptions, which Pikmin 4's `main` uses
+  (recomp/regs.py; needs the runtime of Milestone 3)
 
 ## Milestone 3 - Boot
 

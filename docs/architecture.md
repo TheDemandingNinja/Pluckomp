@@ -27,9 +27,17 @@ over in design. The game-specific half (patches, version tables, renderer quirks
 
 ### 2. CPU: lift ARM64 to C (`recomp/`)
 
-- One C function per guest function, direct calls for `BL`, an address-keyed table for indirect branches.
+- One C function per guest function, direct calls for `BL`, an address-keyed table per module (`<mod>_table.c`) for
+  indirect branches. Guest addresses are host addresses: `recomp/layout.py` places the modules from 0x7000000000.
+- Function starts come from `.eh_frame_hdr`, init arrays, symbols, relocations, `BL` targets and materialised code
+  addresses, then out-of-function branch targets until a fixpoint (about 432 000 functions in v2.0.0's `main`).
+- Jump tables behind `br` are resolved statically into `switch` statements; flags, X registers and the most used V
+  registers live in C locals.
+- FP / AdvSIMD lowers to portable C (`runtime/simd.h`), bit-exact to the A57 including FPCR rounding and NaNs.
 - Every emitted file carries `GENERATED_MARKER` so the content guard keeps it out of git.
-- Differential tests against a reference ARM64 interpreter (test-only, never linked into the game).
+- Differential tests against Unicorn (`tests/diff/`, test-only, never linked into the game).
+- Unlike TotK, Pikmin 4's `main` imports `setjmp` / `longjmp` and the C++ exception runtime; generated code trusts
+  AAPCS64 callee-saved registers across calls (`recomp/regs.py`), which the runtime must uphold for those paths.
 
 ### 3. Host (`runtime/`)
 

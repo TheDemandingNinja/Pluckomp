@@ -26,9 +26,13 @@ Edit `config.local.toml` to point at your own game dump and keys.
    game too. `--verify` checks the RomFS against its hash tree first, `--no-romfs` skips it. NSZ / XCZ inputs must be
    decompressed first.
 
+2. `python recomp/gen.py` - lift `main`, `subsdk0` and `sdk` of the newest extracted version to C in
+   `generated/<title id>-v<version>/`, one chunk file per few thousand functions plus a function table per module.
+   `--exefs` / `--out` pick another version; `--jobs` sets the worker count (default: by free memory, about 1.5 GB
+   per worker). Unchanged chunks are reused on the next run (`--no-cache` lifts all).
+
 Not implemented yet:
 
-2. `python recomp/gen.py` - lift `main` / `sdk` / `subsdk*` to C in `generated/`
 3. `python tools/build_game.py` - compile the generated C and `runtime/` into `build/bin/`
 
 ## Checks
@@ -36,3 +40,11 @@ Not implemented yet:
 - `python tools/check_content.py` - the content guard CI runs
 - `python tests/check_content_test.py` - unit checks for the guard
 - `python tests/extract_test.py` - round trips of the extractor on synthetic NSP / XCI images
+
+Differential tests of the lifter against Unicorn (a Cortex-A57). They need clang and, except `atomic.py`, an
+extracted ExeFS (`--exefs`, default the newest version under `build/extract/`). Every lifter change passes them.
+
+- `python tests/diff/lift.py` - single instructions sampled from the game's own code, from random states
+- `python tests/diff/simd.py` - FP / AdvSIMD encodings with edge-case operands
+- `python tests/diff/atomic.py` - exclusives and LSE atomics
+- `python tests/diff/func.py` - whole generated functions of the game, run until they return
