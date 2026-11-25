@@ -1,0 +1,13 @@
+# Copy to config.local.toml (ignored by git) and point it at your own files.
+
+[input]
+# Base game, as NSP or XCI. Pikmin 4's title id is 0100B7C00933A000 (check it against your own dump).
+base = 'C:\Games\Pikmin4\base.nsp'
+# Update NSPs (same title id ending in 800). Leave empty for the base version only.
+updates = []
+# Keys dumped from your own console. Never printed or copied by the tools.
+keys = 'C:\Switch\prod.keys'
+
+[work]
+# Extracted files, generated C and builds go here.
+dir = 'build'

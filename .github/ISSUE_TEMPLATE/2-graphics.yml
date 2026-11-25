@@ -1,0 +1,33 @@
+name: Graphics
+description: Something draws wrong, flickers or is missing.
+labels: [bug, graphics]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Do not attach or link game files, keys, firmware or builds. Issues that do are closed.
+  - type: input
+    id: version
+    attributes:
+      label: Version
+    validations:
+      required: true
+  - type: textarea
+    id: system
+    attributes:
+      label: System info
+      description: OS, CPU, GPU and driver version, resolution and graphics settings.
+      render: text
+    validations:
+      required: true
+  - type: textarea
+    id: what
+    attributes:
+      label: What looks wrong, and where in the game
+      description: Attach screenshots. If you can, add one from the Switch or an emulator for comparison.
+    validations:
+      required: true
+  - type: textarea
+    id: log
+    attributes:
+      label: Log

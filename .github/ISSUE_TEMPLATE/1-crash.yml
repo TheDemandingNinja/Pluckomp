@@ -1,0 +1,55 @@
+name: Crash
+description: The game closes, freezes or shows a FATAL message.
+labels: [bug, crash]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Do not attach or link game files, keys, firmware or builds. Issues that do are closed.
+  - type: checkboxes
+    id: duplicates
+    attributes:
+      label: Existing issues
+      options:
+        - label: I searched open and closed issues for this crash.
+          required: true
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: Recomp version and game update, for example "0.1.0, game 1.0.0".
+    validations:
+      required: true
+  - type: textarea
+    id: system
+    attributes:
+      label: System info
+      description: OS, CPU, GPU and driver version.
+      render: text
+    validations:
+      required: true
+  - type: dropdown
+    id: when
+    attributes:
+      label: When does it crash?
+      options:
+        - At startup, before the Nintendo logo
+        - Before the title screen
+        - While loading a save
+        - In gameplay
+        - In a cutscene
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: What you did before the crash
+    validations:
+      required: true
+  - type: textarea
+    id: log
+    attributes:
+      label: Log
+      description: Attach the whole log file of the run that crashed. Do not cut or edit it.
+    validations:
+      required: true
