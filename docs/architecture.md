@@ -41,9 +41,17 @@ over in design. The game-specific half (patches, version tables, renderer quirks
 
 ### 3. Host (`runtime/`)
 
-- Threads, synchronisation, memory, IPC services and SVCs in portable C, with OS calls behind `runtime/platform/`.
-- File system serves RomFS, so the engine's pak loader reads the user's own files in place.
-- Window, input and audio output through SDL3.
+- The core of TotK Recomp's host runtime, without its TotK-only parts: the loader maps the NSOs at the layout bases,
+  links them and binds host overrides by symbol (`loader.c`, `hostfn.c`); guest memory, threads on virtual cores,
+  synchronisation and SVCs (`memory.c`, `kernel.c`, `svc.c`); in-process IPC with `sm:` (`ipc.c`); OS calls behind
+  `runtime/platform/`.
+- The OS boundary is the SDK's `nn::*` functions: `fs_host.c`, `romfs.c`, `ov_system.c`, `ov_services.c` and
+  `ov_hid.c` answer them on the host, and the Horizon services behind them are never opened. What is reached and how
+  it is answered: [coverage.md](coverage.md).
+- File system serves the extracted RomFS directory in place, so the engine's pak loader reads the user's own files.
+- `boot.c` runs the game's `nn::init::Start` with rtld's three callbacks, the second of which runs every module's
+  constructors.
+- Window, input and audio output through SDL3 (later milestones).
 
 ### 4. Graphics (`runtime/`)
 

@@ -1,0 +1,53 @@
+// Adapted from TotK Recomp runtime/fs.h @ afae80c (MIT, Copyright (c) 2026 Valiantsin Dzerakh).
+// Adapted from MacNativeGames games/totk/runtime/fs_host.h @ b75be8cf (MIT, Copyright (c) 2026 MacNativeGames
+// contributors).
+// The nn::fs host layer: the read-only RomFS (romfs.c) and writable save, temporary and
+// cache storage under the profile directory (fs_host.c). Both register their nn::fs overrides with HOST_OVERRIDE;
+// this header is what the two files and the probe share.
+#pragma once
+#include <stddef.h>
+#include <stdint.h>
+#include <wchar.h>
+
+// ---- nn::fs results
+#define FS_R_PATH_NOT_FOUND 0x202u
+#define FS_R_ALREADY_EXISTS 0x402u
+#define FS_R_NOT_EMPTY 0x1002u
+#define FS_R_UNSUPPORTED_OPEN 0x6402u    // RomFS: any open mode but read
+#define FS_R_INVALID 0xe402u             // RomFS: bad handle, offset or argument
+#define FS_R_TARGET_NOT_FOUND 0x7d402u
+#define FS_R_INVALID_ARGUMENT 0x2ee202u
+#define FS_R_INVALID_PATH 0x2ee602u
+#define FS_R_OPEN_MODE 0x307402u
+#define FS_R_APPEND_REQUIRED 0x2f5e02u
+
+enum { FS_OPEN_READ = 1, FS_OPEN_WRITE = 2, FS_OPEN_APPEND = 4 };   // nn::fs::OpenMode
+enum { FS_ENTRY_DIRECTORY = 0, FS_ENTRY_FILE = 1 };                 // nn::fs::DirectoryEntryType
+
+// ---- romfs.c
+// Handles 0x1_0000_0000 + j; host storage uses 0x2_0000_0000 + j (files) and 0x3_0000_0000 + j (directories).
+#define ROMFS_HANDLE_BASE 0x100000000ull
+int romfs_owns(const char *path);                          // path is on the mounted RomFS ("<mount>:...")
+int romfs_handle(uint64_t h);                              // h is a RomFS file handle
+uint32_t romfs_mount(const char *name);                    // nn::fs::MountRom; a second name is fatal
+uint32_t romfs_open(uint64_t *out, const char *path, int mode);
+uint32_t romfs_read(uint64_t *out, uint64_t h, int64_t offset, void *buffer, uint64_t size);
+uint32_t romfs_size(int64_t *out, uint64_t h);
+void romfs_close(uint64_t h);
+uint32_t romfs_entry_type(int *out, const char *path);
+int romfs_host_path(const char *path, char *out, size_t n);   // host path of a RomFS path; 0 when not one
+void fs_trace(const char *what, const char *path);         // PLUCKOMP_TRACE=fs: one line per open
+
+// ---- fs_host.c
+void fs_host_set_profile(const char *dir);                 // profile directory; before the first storage mount only
+                                                           // (default rt_config()->profile)
+int fs_save_busy(void);                                    // a save is being written: a save file open for writing,
+                                                           // or save data changed in the last 3 s and not committed
+void fs_save_flush(void);                                  // wait for a save Commit still running in the background;
+                                                           // every exit path calls it before the process ends
+uint32_t fs_save_commits(char *slot, size_t cap);          // commits that changed save files; slot: the save folder
+                                                           // (slot_00 ...) the last one wrote first
+int fs_save_copy_slot(const char *slot, const char *dst);  // a folder of the newest save copied to dst (replaced)
+void fs_save_read_from(const char *dir);                   // quick load: reads of save:/slot_NN/<file> open dir/<file>
+                                                           // while dir is set; NULL ends it
+int fs_save_read_from_hits(void);                          // opens redirected since the last fs_save_read_from(dir)

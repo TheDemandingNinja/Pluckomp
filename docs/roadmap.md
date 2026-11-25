@@ -24,8 +24,13 @@
 
 ## Milestone 3 - Boot
 
-- Host runtime gets the game to its first frame with a null renderer (logs only)
-- SVC and IPC coverage list for Pikmin 4
+- [x] `tools/build_game.py`: compile the generated C and `runtime/` into `pluckomp.exe`
+- [x] Host runtime core from TotK Recomp: loader and dynamic linking, guest memory, kernel, SVCs, in-process IPC,
+  nn::fs with the RomFS served from the extracted directory, system service overrides, crash reporter
+- [x] `--boot` reaches the first NVN call (`nvnBootstrapLoader`) through all module constructors, nnMain and UE4's
+  engine pre-init
+- [x] SVC and IPC coverage list for Pikmin 4 ([coverage.md](coverage.md))
+- [ ] NVN front end with a null back end (logs only), so the game runs on to its first present
 
 ## Milestone 4 - Picture
 

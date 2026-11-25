@@ -31,9 +31,21 @@ Edit `config.local.toml` to point at your own game dump and keys.
    `--exefs` / `--out` pick another version; `--jobs` sets the worker count (default: by free memory, about 1.5 GB
    per worker). Unchanged chunks are reused on the next run (`--no-cache` lifts all).
 
-Not implemented yet:
+3. `python tools/build_game.py` - compile the generated C and `runtime/` into
+   `build/<title id>-v<version>/pluckomp.exe` with clang and Ninja (MSYS2 UCRT64 when installed, else from PATH, such as
+   llvm-mingw). The first build compiles about 2 GB of C and takes a while; later builds recompile what changed.
+   `--jobs` sets the parallel compiles of generated code (default: by free memory).
 
-3. `python tools/build_game.py` - compile the generated C and `runtime/` into `build/bin/`
+## Running
+
+`pluckomp.exe` reads the ExeFS and RomFS of the version it was built from (`--exefs DIR`, `--romfs DIR` pick others)
+and keeps saves under `build/profile` (`--profile DIR`). It writes its log to stderr and to `logs/pluckomp.log` next to
+the executable.
+
+- `pluckomp.exe --selftest` - layout, dispatch table and host functions, without game files
+- `pluckomp.exe --probe-loader` - load and relocate the modules, check the bindings
+- `pluckomp.exe --boot` - run the game to its first NVN call and exit 0
+- `PLUCKOMP_TRACE=svc,host,ipc,fs` - log every SVC, host-function call, IPC request or file open
 
 ## Checks
 
