@@ -6,9 +6,13 @@
 
 ## Milestone 1 - Input
 
-- `tools/extract.py`: ExeFS and RomFS out of the user's NSP / XCI with their own keys
-- Known-good hashes per game version in `tools/data/`
-- Identify which updates exist and pick the primary target version
+- [x] `tools/extract.py`: ExeFS and RomFS out of the user's NSP / XCI with their own keys (tested on synthetic
+  images only)
+- [ ] Run against a real dump and fix what differs from retail
+- [ ] Known-good ExeFS hashes per game version in `tools/data/exefs_hashes.json`
+- [ ] Update RomFS: apply BKTR patches on top of the base RomFS
+- [ ] NSZ / XCZ input
+- [ ] Identify which updates exist and pick the primary target version
 
 ## Milestone 2 - Lifter
 

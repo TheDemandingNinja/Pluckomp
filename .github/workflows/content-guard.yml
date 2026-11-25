@@ -14,3 +14,5 @@ jobs:
           python-version: "3.12"
       - run: python tools/check_content.py
       - run: python tests/check_content_test.py
+      - run: pip install -r requirements.txt
+      - run: python tests/extract_test.py
