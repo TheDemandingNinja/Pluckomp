@@ -4,7 +4,8 @@
 
 - Python 3.12+ in `.venv` (`python -m venv .venv`, then `.venv\Scripts\pip install -r requirements.txt`)
 - MSYS2 UCRT64 Clang and Ninja (`C:\msys64\ucrt64\bin`); generated C uses GNU extensions, so MSVC `cl.exe` is out
-- Vulkan SDK (for `glslc` and validation layers)
+- Vulkan SDK (for `glslc` and validation layers) and SPIRV-Tools (`spirv-val`; MSYS2 has it in CLANG64)
+- .NET 10 SDK and the Visual Studio Build Tools (C++), for the NativeAOT shader translator
 - Git
 
 Linux: the same with the distribution's clang, ninja, Python and Vulkan SDK.
@@ -36,6 +37,9 @@ Edit `config.local.toml` to point at your own game dump and keys.
    llvm-mingw). The first build compiles about 2 GB of C and takes a while; later builds recompile what changed.
    `--jobs` sets the parallel compiles of generated code (default: by free memory).
 
+4. `python tools/build_xlate.py` - build the shader translator `build/xlate/pluckomp_xlate.exe` from
+   `tools/vendor/ryujinx` with `tools/xlate/patches/` applied to a copy under `build/xlate/`. Takes under a minute.
+
 ## Running
 
 `pluckomp.exe` reads the ExeFS and RomFS of the version it was built from (`--exefs DIR`, `--romfs DIR` pick others)
@@ -54,6 +58,8 @@ the executable.
 - `python tools/check_content.py` - the content guard CI runs
 - `python tests/check_content_test.py` - unit checks for the guard
 - `python tests/extract_test.py` - round trips of the extractor on synthetic NSP / XCI images
+- `python tests/xlate_smoke.py` - a hand-assembled fragment shader through the translator's `--serve` loop, SPIR-V
+  checked with `spirv-val`
 
 Differential tests of the lifter against Unicorn (a Cortex-A57). They need clang and, except `atomic.py`, an
 extracted ExeFS (`--exefs`, default the newest version under `build/extract/`). Every lifter change passes them.

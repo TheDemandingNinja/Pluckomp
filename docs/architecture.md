@@ -63,7 +63,12 @@ over in design. The game-specific half (patches, version tables, renderer quirks
 - Back ends implement `GfxBackend` (`gfx.h`). Today only the null one (`gfx_null.c`): no GPU, every submit completes
   at once with its CPU-visible side effects (event signals, counter reports, buffer copies and fills, uniform updates,
   fence syncs), and each present is logged with its frame number, size and format.
-- Next: a Vulkan back end; Maxwell shaders translated to SPIR-V and cached at install.
+- Shaders: Ryujinx 1.3.2's translator (`tools/vendor/ryujinx`, unmodified) with TotK Recomp's generic patches
+  (`tools/xlate/patches/`; its shadow-filter and motion-vector patches are left out), built with .NET NativeAOT as
+  `pluckomp_xlate.exe` and run as a separate process that answers one job per line (`tools/xlate/Program.cs`). It
+  writes SPIR-V for Vulkan and a `res.json` with the bindings. `pluckomp_xlate.id` hashes its inputs to key a shader
+  cache.
+- Next: a Vulkan back end that runs the translator on first use of each shader and caches the result.
 
 ### 5. Installer (`installer/`)
 

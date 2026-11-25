@@ -36,7 +36,17 @@
 
 ## Milestone 4 - Picture
 
-- NVN on Vulkan draws the title screen
+NVN on Vulkan draws the title screen. The Vulkan back end and shader translator of TotK Recomp come over without
+their TotK-only parts (DLAA, FSR, frame generation, HDR, motion vectors, contact shadows, colour grading, resolution
+patches, frame-ahead sync).
+
+- [x] Shader translator: Ryujinx 1.3.2's Maxwell-to-SPIR-V translator with TotK Recomp's generic patches, built with
+  .NET NativeAOT (`tools/build_xlate.py`, smoke test `tests/xlate_smoke.py`)
+- [ ] Window and swapchain (SDL3), present of the game's window texture
+- [ ] Vulkan device, memory pools, textures (block-linear deswizzle, ASTC), samplers, sync and fences
+- [ ] Replay of the recorded NVN command streams: transfers, clears, draws and dispatches, pipelines and the shader
+  cache (`runtime/gfx_shader.c`)
+- [ ] `--frames N` with the Vulkan back end and frame captures; the title screen drawn
 
 ## Milestone 5 - Playable
 
