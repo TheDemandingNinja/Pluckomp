@@ -12,6 +12,7 @@ __pycache__/
 # Game inputs and everything derived from them. Never commit these.
 # tools/check_content.py enforces the same rule in CI and the pre-commit hook.
 /game/
+/dump/
 /build/
 /generated/
 *.xci

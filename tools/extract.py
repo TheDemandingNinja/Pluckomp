@@ -156,9 +156,10 @@ def main() -> int:
         print(f"{args.config} not found: copy config.example.toml to config.local.toml and fill it in.")
         return 2
     config = tomllib.loads(args.config.read_text(encoding="utf-8"))
-    inputs = [Path(config["input"]["base"])] + [Path(p) for p in config["input"].get("updates", [])]
+    # Relative paths in the config are relative to the repository root, wherever the tool is run from.
+    inputs = [ROOT / config["input"]["base"]] + [ROOT / p for p in config["input"].get("updates", [])]
     work = ROOT / config.get("work", {}).get("dir", "build")
-    keys = Keys.load(Path(config["input"]["keys"]))
+    keys = Keys.load(ROOT / config["input"]["keys"])
     known = json.loads(HASHES.read_text(encoding="utf-8"))
 
     ok = True

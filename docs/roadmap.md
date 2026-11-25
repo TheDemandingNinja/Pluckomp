@@ -8,8 +8,8 @@
 
 - [x] `tools/extract.py`: ExeFS and RomFS out of the user's NSP / XCI with their own keys (tested on synthetic
   images only)
-- [ ] Run against a real dump and fix what differs from retail
-- [ ] Known-good ExeFS hashes per game version in `tools/data/exefs_hashes.json`
+- [x] Run against a real dump (base XCI v0 with bundled v1.0.1, update NSP v2.0.0)
+- [x] Known-good ExeFS hashes per game version in `tools/data/exefs_hashes.json`
 - [ ] Update RomFS: apply BKTR patches on top of the base RomFS
 - [ ] NSZ / XCZ input
 - [ ] Identify which updates exist and pick the primary target version
