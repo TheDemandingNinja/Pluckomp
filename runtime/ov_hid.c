@@ -33,10 +33,19 @@ static void ov_mouse_state(Cpu *c) { zero_out(c, 0, MOUSE_STATE_BYTES, "GetMouse
 static void ov_touch_state(Cpu *c) { zero_out(c, 0, TOUCH_STATE_16_BYTES, "GetTouchScreenState"); }
 static void ov_vibration_info(Cpu *c) { zero_out(c, 0, VIBRATION_INFO_BYTES, "GetVibrationDeviceInfo"); }
 
+// Result ShowControllerSupport(ControllerSupportResultInfo *out, const ControllerSupportArg &arg): no controller is
+// connected, so the applet answers as when the player backs out of it: canceled, nothing written to out. The first
+// calls and every 100th are logged, so a game that asks again and again shows in the log.
+#define HID_R_CONTROLLER_SUPPORT_CANCELED RT_RESULT(202, 3101)
 static void ov_controller_support(Cpu *c) {
-    char at[128];
-    rt_fatal("nn::hid::ShowControllerSupport: the controller applet is not served (from %s)",
-             ldr_describe(c->x[30] - 4, at, sizeof at));
+    static uint32_t calls;
+    uint32_t n = __atomic_add_fetch(&calls, 1, __ATOMIC_RELAXED);
+    if (n <= 3 || n % 100 == 0) {
+        char at[128];
+        rt_log("hid: ShowControllerSupport call %u from %s: canceled (no controller)", n,
+               ldr_describe(c->x[30] - 4, at, sizeof at));
+    }
+    ret_x(c, HID_R_CONTROLLER_SUPPORT_CANCELED);
 }
 
 HOST_OVERRIDE("_ZN2nn3hid14InitializeNpadEv", ov_void);

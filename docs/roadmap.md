@@ -30,7 +30,9 @@
 - [x] `--boot` reaches the first NVN call (`nvnBootstrapLoader`) through all module constructors, nnMain and UE4's
   engine pre-init
 - [x] SVC and IPC coverage list for Pikmin 4 ([coverage.md](coverage.md))
-- [ ] NVN front end with a null back end (logs only), so the game runs on to its first present
+- [x] NVN front end from TotK Recomp with a null back end (logs only): `--frames N` runs to the Nth present (600 pass)
+- [x] Audio services the SDK reaches on the way (`audren:u`, `audout:u`, `hwopus`), silent; CMIF domains in `ipc.c`
+- [ ] A host movie decoder (`movie::Decoder` answers unsupported for now, [coverage.md](coverage.md))
 
 ## Milestone 4 - Picture
 
@@ -38,4 +40,5 @@
 
 ## Milestone 5 - Playable
 
-- Input, audio, saves; first tester build through the installer
+- Input (the game waits at the controller applet until a controller is connected), audio output, saves; first tester
+  build through the installer

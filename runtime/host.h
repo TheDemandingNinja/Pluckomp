@@ -18,7 +18,7 @@
 
 // ---- logging and results
 void rt_log(const char *fmt, ...) __attribute__((format(printf, 1, 2)));   // "[host] <msg>\n" to the log, one write
-// The log is stderr plus, in a game run whose stderr is not a file, logs\totk.log next to totk.exe (main.c log_open).
+// The log is stderr plus, in a game run whose stderr is not a file, logs\pluckomp.log next to pluckomp.exe (main.c log_open).
 // rt_logf and rt_log_raw write to both without the prefix and the newline: crash reports, fatal errors, guest output.
 void rt_logf(const char *fmt, ...) __attribute__((format(printf, 1, 2)));
 void rt_vlogf(const char *fmt, va_list ap);
@@ -30,52 +30,6 @@ enum { RT_TRACE_SVC = 1, RT_TRACE_HOSTCALL = 2, RT_TRACE_IPC = 4, RT_TRACE_FS = 
        RT_TRACE_PLUGIN = 1024 };     // no name either: the plugin service run (plugin_init.c) sees every SVC through
                                      // rt_plugin_svc while it runs a plugin's init
 extern unsigned rt_trace;                       // from PLUCKOMP_TRACE=svc,host,ipc,fs,gfx,perf,sched,audio,present (or all)
-// prof_win.c: PLUCKOMP_PROFILE=<path> sampling profiler; PLUCKOMP_TRACE=perf frame timing (waits of the render thread)
-// PERF_TEX: texture uploads on the render thread (deswizzle, decode, staging), PERF_ASTC included
-enum { PERF_PACE, PERF_FENCE, PERF_DRAIN, PERF_PIPE, PERF_XLATE, PERF_TEX, PERF_ASTC, PERF_N };
-void prof_start(void);
-void prof_write(void);                          // idempotent; boot.c calls it before _exit
-uint64_t perf_begin(void);                      // start time of a wait; pair with perf_end
-void perf_end(int kind, uint64_t t0);           // counts render-thread time only
-void perf_replay(uint64_t t0);                  // replay (NVN -> Vulkan recording) time on any thread, waits inside it included
-void perf_replay_thread(void);                  // the calling thread replays for the render thread: perf_end counts its waits
-void perf_main_thread(void);                    // the calling thread is the guest main thread (PLUCKOMP_PROFILE_MAIN)
-// The calling thread is one every frame goes through: on a hybrid CPU it prefers the P-cores (main.c, PLUCKOMP_PCORE);
-// the first thread of each role logs it.
-enum { PCORE_MAIN, PCORE_RENDER, PCORE_REPLAY, PCORE_RECORDER, PCORE_PRESENT, PCORE_N };
-void perf_core_thread(int role);
-// Events per 60-frame window: graphics pipelines finished by the background workers, draws skipped while pending,
-// first texture uploads and re-uploads after CPU writes, draws skipped while a shader translates in the background,
-// draws that waited for their pending pipeline and got it, draws into a target the previous frame did not render that
-// waited for their pending shader or pipeline instead of being skipped (vk_exec_draw.c prepare_draw). The rest feed only
-// the flight recorder (flight.c): graphics pipelines created on any thread, texture images created, images created at an
-// address where a live image of another descriptor already starts, write-backs done and skipped because the CPU
-// rewrote the storage after the GPU render (vk_texture.c vk_texture_write_back).
-enum { PERF_CNT_PIPE_ASYNC, PERF_CNT_PIPE_SKIP, PERF_CNT_TEX_UP, PERF_CNT_TEX_REUP, PERF_CNT_SHADER_SKIP,
-       PERF_CNT_PIPE_WAIT, PERF_CNT_ONESHOT_WAIT, PERF_CNT_PIPE_BUILT, PERF_CNT_TEX_NEW, PERF_CNT_TEX_ALIAS,
-       PERF_CNT_WB, PERF_CNT_WB_SKIP, PERF_CNT_N };
-void perf_count(int kind);
-void perf_present(uint64_t frame);
-void perf_summary_flush(void);                  // prints the frame-time summary of the running period (exit); the 60 s lines come from perf_present
-void gfx_exit_log(void);                        // back end's lines for the exit summary (weak no-op in prof_win.c)
-void perf_gpu_wait(uint64_t t0);                // a wait for a GPU fence ended (any thread; the render thread's also counts as PERF_FENCE)
-// GPU side of the 60-frame perf line, filled by the graphics back end when it set perf_gpu_stats. gpu_ns: GPU busy time
-// since the previous call (timestamp queries, overlaps counted once), have_gpu 0 when the device has no timestamps.
-typedef struct {
-    int have_gpu, have_vram, vram_exact;
-    uint64_t gpu_ns, gpu_parts, gpu_missed;     // busy time, submission parts timed, parts left untimed
-    uint64_t vram_used, vram_budget;
-    int have_idle;                              // calibrated timestamps: the idle split below is filled
-    uint64_t idle_ns, starved_ns, queued_ns;    // GPU idle between timed parts; of it, before the part was submitted; submit to start
-    uint64_t idle_gaps, max_gap_ns;             // gaps over 0.5 ms; the longest
-} PerfGpu;
-extern void (*perf_gpu_stats)(PerfGpu *out);
-// The performance overlay (perfmon.c): mode 0 off, 1 fps, 2 full. While it is on, perf_present hands every frame to
-// perfmon_frame; full also takes the event counts (perf_count) and the GPU timestamps as PLUCKOMP_TRACE=perf does.
-void perf_set_overlay(int mode);
-int perf_gpu_timing(void);                      // GPU timestamps wanted: PLUCKOMP_TRACE=perf or the full overlay
-void perf_gpu_busy(uint64_t ns);                // GPU busy time of a timed submission part (vk_sync.c, any thread)
-uint64_t perf_gpu_busy_total(void);             // its running total (the overlay's GPU time per frame)
 #define RT_RESULT(module, desc) ((uint32_t)(module) | ((uint32_t)(desc) << 9))
 void rt_sha256(const void *p, size_t n, uint8_t out[32]);   // BCrypt; fatal if the provider fails
 
@@ -229,10 +183,7 @@ typedef struct { const char *file, *sha256; } RtFileHash;
 extern const RtFileHash rt_exefs_sha256[];                 // tools/data/expected-<version>.json "exefs_sha256"
 extern const int rt_exefs_sha256_count;
 extern const char rt_default_exefs[], rt_default_romfs[], rt_default_profile[];
-extern const int rt_game_version;                          // the game build: 110 (1.1.0), 121 (1.2.1) or 143 (1.4.3)
 extern const char rt_port_version[];                       // VERSION at the build's root: 0.1.0, 0.1.0+973c626 in a release
-#define RT_V110 (rt_game_version == 110)                    // 1.1.0: its own boot constants and data slots
-#define RT_V143 (rt_game_version >= 143)
 
 // ---- kernel (kernel.c)
 typedef struct RtThread RtThread;
@@ -286,136 +237,16 @@ void fs_init(void);                                        // idempotent; paths 
 void account_uid(uint64_t out[2]);                         // the local user's nn::account::Uid {lo, hi}, persistent in
                                                            // <profile>/account.uid; fs_host.c names save data after it
 
-// ---- movies (ov_movie.c)
-void movie_tick(Cpu *c);                                   // at every present, on the presenting guest thread: hands
-                                                           // decoded movie frames over when due, signals their events
-// ---- camera speed (camera_speed.c): PLUCKOMP_STICK_SENS
-float cam_speed_wanted(void);                              // the factor PLUCKOMP_STICK_SENS asks for, 0.1 to 3
-float cam_speed_applied(void);                             // the factor in effect: 1 until romfs.c serves the pack
-int cam_pack_build(const void *in, size_t n, const void *zsdic, size_t zsdic_n, void **out, size_t *out_n);
-                                                           // Pack/Actor/PlayerCamera.pack.zs with the camera speeds
-                                                           // multiplied, malloc'd; 0 = factor 1 or cannot (logged)
-void cam_pack_served(void);                                // romfs.c serves the multiplied pack
-// ---- game resolution (resolution.c): PLUCKOMP_OUTPUT_RES, PLUCKOMP_RENDER_SCALE
-uint64_t res_grass_heap_extra_kib(void);                   // PLUCKOMP_GRASS_RANGE: added to the HeapDef grass heap; 0 = none
-uint64_t res_grass_heap_extra_bytes(void);                 // the same, added to the application pool, 2 MiB steps
-uint64_t res_heap_extra_bytes(void);                       // added to the application pool (mem_init), 2 MiB steps
-uint64_t res_heap_extra_kib(void);                         // added to the HeapDef texture heap and its parent; 0 = none
-uint64_t res_tex_heap_extra_bytes(void);                   // PLUCKOMP_TEX_HEAP_EXTRA_MB: added to the application pool and
-                                                           // the heap cap (mem_init), 2 MiB steps; 0 = none
-int res_heapdef_tex_grown(const void *in, size_t n);       // the HeapDef table (.byml.zs) grows TextureHeap over the
-                                                           // shipped size (an HD texture pack's)
-int res_heapdef_plain(const void *in, size_t n);           // a readable HeapDef table whose TextureHeap is not
-                                                           // grown (a content mod's)
-int res_heapdef_build(const void *in, size_t n, void **out, size_t *out_n);   // the HeapDef table (.byml.zs) with
-                                                           // the grown heaps, malloc'd; 0 = cannot (logged)
-void res_heapdef_served(void);                             // romfs.c serves the grown table
-void res_init(void);                                       // after rt_patches_init: the patch page and the sets
-float res_dlss_lod_bias(void);                             // PLUCKOMP_DLSS upscaling: texture LOD bias (<= 0)
-int res_dlss_mode(const char *mode);                       // PLUCKOMP_DLSS changed while running: new scene size
-int res_dlss_dll(void);                                    // the DLSS library is next to the executable
-void res_fn_hit(uint64_t addr, uint64_t x0);               // main.c fnprof_hit: catches the renderer at start
-void res_present(Cpu *c);                                  // nvnQueuePresentTexture: applies a pending scene size
-void res_sizes(unsigned out[2], unsigned scene[2]);      // the output and scene sizes in effect (the game's own
-                                                           // until res_init switched the sets on)
-int res_is_16x9(unsigned w, unsigned h);                   // within 1% of 16:9 (the test res_init and romfs.c share)
-int res_wants_wide_overlay(const unsigned out[2]);         // not 16:9 on a game version with the camera aspect patch
-int romfs_shaped_ready(unsigned w, unsigned h);            // romfs-patches-<w>x<h> has a manifest (romfs.c; works
-                                                           // before fs_init)
-int romfs_shaped_prompts_ready(const char *folder, unsigned w, unsigned h);   // the same for <folder>-<w>x<h>, a
-                                                           // prompts' folder (romfs-patches-xbox, -xbox-label, -pc)
-void res_wanted(unsigned out[2]);                          // the output size PLUCKOMP_OUTPUT_RES asks for
-void res_asked(unsigned out[2]);                           // the same before a missing shaped layout made it 16:9
-void res_fov_live(void);                                   // PLUCKOMP_FOV to the camera (set fov); on a settings change
-void res_dynres_live(void);                                // PLUCKOMP_DYNAMIC_RES to the game (set fixres); on a settings change
-// ---- code patches (patches.c) and the frame step (frame_rate.c)
-void rt_patches_init(void);                                // after ldr_load: switches from the environment, the patch
-                                                           // page committed; logs the sets
-int rt_patch_set(const char *name);                        // index of a set of generated patches.h, -1 if absent
-int rt_patch_enabled(int set);                             // the set is on (0 for -1)
-void rt_patch_disable(int set);                            // before the guest starts: a set needs another that is off
-void rt_patch_switch(int set, int on);                     // at run time (live settings): each site takes the new code
-                                                           // the next time it runs
-void *rt_patch_page(void);                                 // the page the patched code reads (NULL without the table)
-// Contested sites (recomp/patches.py `ordered`): a site two or more ordered sets patch runs the one that is on with the
-// lowest rank (a tie: the one later in the patch file); rt_patch_pick[] holds its place, 1 up, 0 for none.
-typedef struct {
-    const char *module;                                    // "main"
-    uint32_t offset;                                       // the site's module offset
-    const int16_t *sets;                                   // its ordered sets, in the order its C tests them
-    int nsets;
-} RtPatchPick;
-void rt_patch_rank(int set, int rank);                     // an ordered set's rank (0 first: the Mods tab's position);
-                                                           // unranked sets come after every ranked one
-void rt_patch_picks(void);                                 // every contested site's pick from the sets on and their
-                                                           // ranks; rt_patch_switch of an ordered set redoes its sites
-int rt_patch_pick_count(void);
-const RtPatchPick *rt_patch_pick_at(int i);                // NULL out of range
-int rt_patch_pick_winner(int i);                           // the place in its sets of the set that runs there, -1 none
-const char *rt_patch_name(int set);                        // NULL out of range
-// --probe-mods: a set table of its own (names, n sets, its contested sites), every set off and unranked; names NULL
-// returns to the generated table.
-void rt_patch_probe_table(const char *const *names, int n, const RtPatchPick *picks, int npicks);
-void frame_step_init(void);                                // after rt_patches_init: the real-time step's first value
-int frame_step_realtime(void);                             // the real-time step is on: presents ignore the interval
-uint64_t frame_step_cap_ns(void);                          // with the real-time step: the shortest frame in ns
-double frame_step_limit_hz(void);                         // the frame rate the limit gives (overlay); 0 unknown
-int64_t frame_step_world_us(void);                         // game time since the loaded save's first frame, -1 before
-                                                           // (PLUCKOMP_FPS_LIMIT, live)
-uint64_t frame_step_ticks(void);                           // game time since the first present in 60 Hz ticks (input scripts)
-// In-launch A/B measurement: PLUCKOMP_AB=<seconds> splits the world clock (frame_step_world_us) into blocks of that much
-// game time in the order A B B A (repeated); rt_ab() is 1 in the B blocks, 0 in A blocks, before the world clock and
-// without PLUCKOMP_AB. rt_knob(name, def) reads the switch
-// PLUCKOMP_<name> once per call (def when unset): 0 off, 2 for "ab" (on in the B blocks only), 1 for anything else;
-// callers keep it and test it with RT_KNOB_ON. The perf line counts the B frames of its window (tools/ab_summary.py
-// compares the windows that are wholly A or wholly B).
-int rt_ab(void);
-int rt_knob(const char *name, const char *def);
-#define RT_KNOB_ON(mode) ((mode) == 2 ? rt_ab() : (mode))
-void frame_step_present(uint64_t display_ns, int interval); // nvnQueuePresentTexture: the frame's display time and
-                                                           // present interval (60 Hz ticks)
 // ---- boot (boot.c, main.c)
 typedef struct {
-    const char *exefs, *romfs, *profile;
-    int boot;
-    double seconds;
-    const char *shot, *gpu;
-    const char *plugin_init;   // --plugin-init DIR: the plugin service run writes its record there (plugin_init.c)
+    const char *exefs, *romfs, *profile;                   // ExeFS directory, extracted RomFS, save profile
+    int boot;                                              // --boot: exit 0 at the first NVN call
+    uint64_t frames;                                       // --frames N: exit 0 at the Nth present (0 = no limit)
 } RtConfig;
-                                                           // romfs: directory with romfs.bin and index.json;
-                                                           // frames: --frames N (0 = no limit); shot: --shot
-                                                           // PATH; gpu: PLUCKOMP_GPU
 const RtConfig *rt_config(void);
 void rt_boot_event(const char *what, Cpu *c, const char *detail);   // checkpoint log; "nvn" ends --boot
 void rt_boot(void);                                        // boot.c
-void rt_boot_plugin_init(void);                            // boot.c: --plugin-init, the plugin service run
-void plugin_init_setup(void);                              // plugin_init.c: before ldr_load
-void plugin_init_run(Cpu *c, const RtLoaded *sdk);         // plugin_init.c: from the module-init callback; exits
-void plugins_setup(void);                                  // plugin_init.c: rt_boot, before ldr_load; nothing
-                                                           // without a plugin in the build
-int plugins_start(Cpu *c, const RtLoaded *sdk);            // plugin_init.c: from the module-init callback, before
-                                                           // the game's constructors; 1 when it ran sdk's DT_INIT
-                                                           // (a plugin's init ran after it)
-// Modes of totk.exe. main.c has run mem_init and parsed the paths; each mode calls ldr_load itself if it needs the
+// Modes of pluckomp.exe. main.c has run mem_init and parsed the paths; each mode calls ldr_load itself if it needs the
 // modules, registers its host functions, then seals (hostfn_seal, or implicitly at the first rt_call). Return the
 // process exit code.
-int probe_cfg(void);                                       // cfg_probe.c
-int probe_dpi(void);                                       // dpi_probe_win.c (Windows only)
-int probe_mods(void);                                      // mods_probe.c
-void discord_init(void);                                   // discord_rpc.c: the Rich Presence thread, game runs only
-void playtime_init(void);                                  // playtime.c: the play time thread, game runs only
-void playtime_save(void);                                  // playtime.c: writes <profile>/playtime.txt; at exit
-int playtime_get(uint64_t *total_s, uint64_t *session_s); // playtime.c: all runs and this one; 0 without a profile
-int probe_playtime(void);                                  // playtime.c: the file, the ticks and the save
-int probe_discord(void);                                   // discord_rpc.c
 int probe_loader(void), probe_kernel(void), probe_ipc(void), probe_services(void), probe_fs(void);
-int probe_gfx_abi(void);                                   // gfx_abi_probe.c
-int probe_vkdevice(void);                                 // vk_device.c
-int probe_nvn(void), probe_nvn_tex(void);                  // nvn_probe.c, nvn_tex_probe.c
-int probe_window(void);                                    // gfx_window_probe.c
-int probe_shader(void);                                    // gfx_shader.c
-int probe_census_dir(char *dir, size_t n);                 // gfx_shader_probe.c: build/<version>/shaders for the probes
-int probe_vkmem(void), probe_vkexec(void), probe_astc(void);                 // tex_probe.c, vk_exec_probe.c, astc_probe.c
-int probe_movie(void);                                     // movie_probe.c: host VP9 movie::Decoder on one RomFS movie
-int vk_pipeline_prepare_shaders(void);                     // vk_pipeline.c: --prepare-shaders (tools/prepare_shaders.py)
-int vk_pipeline_warm_shaders(void);                        // vk_pipeline.c: --warm-shaders (tools/build_game.py)

@@ -1,7 +1,6 @@
 // Adapted from TotK Recomp runtime/ov.h @ afae80c (MIT, Copyright (c) 2026 Valiantsin Dzerakh).
-// Shared by the system overrides: runtime/ov_system.c, ov_input.c, ov_media.c and ov_gfx.c, and their probe.
-// oe_push_message, oe_set_focus and ov_nv_state are in gfx.h (the window posts focus messages, the NVN layer
-// allocates through the recorded callbacks).
+// Shared by the system overrides (ov_system.c, ov_services.c, ov_hid.c). oe_push_message and oe_set_focus are in gfx.h,
+// where a window back end will post focus messages.
 #pragma once
 #include <stddef.h>
 #include <stdint.h>

@@ -35,19 +35,25 @@ typedef struct {
     unsigned ncopy, nmove;
     IpcBuffer xout[IPC_MAX_BUF];           // pointer data the service placed into the client's C buffers
     unsigned nxout;
+    int domain;                            // answer to a domain request: objects[] follow the data (ipc.c dispatch)
+    uint32_t objects[8];
+    unsigned nobjects;
 } IpcResponse;
 
 typedef struct IpcSession IpcSession;
 typedef void (*IpcHandler)(IpcSession *s, const IpcRequest *rq, IpcResponse *rs);
 
-// One server object. Every kernel handle to it (the first one, CloneCurrentObject copies) holds a reference; the
-// last CloseHandle calls close(state).
+// One server object. Every kernel handle to it (the first one, CloneCurrentObject copies) and every domain slot
+// holding it keeps a reference; the last release calls close(state). A session converted to a CMIF domain
+// (ConvertCurrentObjectToDomain) has domain set and no handler of its own: its requests go to the domain's objects.
+typedef struct IpcDomain IpcDomain;
 struct IpcSession {
     const char *name;
     IpcHandler handler;
     void *state;
     void (*close)(void *state);
     int32_t refs;
+    IpcDomain *domain;
 };
 
 uint32_t ipc_session_new(const char *name, IpcHandler handler, void *state, void (*close)(void *state));   // handle
@@ -67,3 +73,7 @@ uint64_t ipc_sessions_released(void);
 
 // The guest frame chain of the request being served, for fatal reports from services.
 void ipc_backtrace(void);
+
+// Services other files implement (ipc.c's service table).
+void hwopus_manager_handler(IpcSession *s, const IpcRequest *rq, IpcResponse *rs);   // hwopus.c: "hwopus"
+void audout_manager_handler(IpcSession *s, const IpcRequest *rq, IpcResponse *rs);   // audout.c: "audout:u"

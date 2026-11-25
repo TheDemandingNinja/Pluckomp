@@ -7,13 +7,16 @@
 // Checkpoints (logged on every run):
 //   module constructors    every module's constructor flag reads 2 after its DT_INIT
 //   nnMain                 the game's entry, observed through its export
-//   nvnBootstrapLoader     the first NVN call, in UE4's NVN RHI bring-up. --boot ends here with exit code 0; a plain
-//                          run stops with a fatal until the NVN front end exists (Milestone 3, null renderer).
+//   nvnBootstrapLoader     the first NVN call, in UE4's NVN RHI bring-up (nvn_procs.c reports it through
+//                          rt_boot_event). --boot ends here with exit code 0.
+//   present N              nvnQueuePresentTexture (nvn_api_obj.c, rt_frame_presented). --frames N ends the run after
+//                          the Nth present with exit code 0.
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
 #include "fs.h"
+#include "gfx.h"
 #include "host.h"
 #include "platform/platform.h"
 
@@ -88,21 +91,31 @@ static void cb_module_finis(Cpu *c) {
 }
 
 // ---- checkpoints
-// nvnBootstrapLoader(const char *name) -> the NVN proc address of name. The game's first NVN call.
-static void ov_nvn_bootstrap(Cpu *c) {
-    char at[128];
-    const char *name = arg_p(c, 0);
-    rt_log("boot: first NVN call nvnBootstrapLoader(\"%s\") from %s", name ? name : "(null)", caller(c, at, sizeof at));
-    if (rt_config()->boot) {
-        stats_line();
-        fflush(stdout);
-        fflush(stderr);
-        fs_save_flush();
-        plat_exit(0);   // other guest threads are still running; nothing of theirs needs an orderly end
-    }
-    rt_fatal("boot: the NVN front end is not implemented yet; run with --boot to stop here");
+static void run_end(void) {
+    stats_line();
+    fflush(stdout);
+    fflush(stderr);
+    fs_save_flush();
+    plat_exit(0);   // other guest threads are still running; nothing of theirs needs an orderly end
 }
-HOST_OVERRIDE("nvnBootstrapLoader", ov_nvn_bootstrap);
+
+// what "nvn": nvnBootstrapLoader(detail), the first NVN call. Ends --boot; returns otherwise.
+void rt_boot_event(const char *what, Cpu *c, const char *detail) {
+    char at[128];
+    if (strcmp(what, "nvn")) rt_fatal("boot: unknown checkpoint %s", what);
+    rt_log("boot: first NVN call nvnBootstrapLoader(\"%s\") from %s", detail, caller(c, at, sizeof at));
+    if (rt_config()->boot) run_end();
+}
+
+// The nth present of the game's window (n from 1). --frames N ends the run at the Nth.
+void rt_frame_presented(uint64_t n) {
+    uint64_t want = rt_config()->frames;
+    if (!want || n < want) return;
+    GfxStats g = gfx_stats();
+    rt_logf("boot: present %llu reached (nvn calls %llu, distinct procs %llu)\n", (unsigned long long)n,
+            (unsigned long long)g.nvn_calls, (unsigned long long)g.nvn_distinct);
+    run_end();
+}
 
 // ---- the guest main thread
 static uint64_t cb_addr[3];

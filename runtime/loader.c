@@ -522,8 +522,8 @@ void ldr_load(const char *exefs_dir) {
     int n = 0;
     for (int i = 0; i < rt_layout_count; i++) {
         // A mod plugin's file that is gone or changed since the build is left out at play time: its patch set cannot
-        // run (plugin_init.c plugins_start keeps it off); the plugin service run needs it and stops.
-        if (rt_layout[i].file && !rt_config()->plugin_init && !plugin_file_ok(&rt_layout[i])) continue;
+        // run.
+        if (rt_layout[i].file && !plugin_file_ok(&rt_layout[i])) continue;
         load_module(&mods[n++], exefs_dir, &rt_layout[i]);
     }
     nmods = n;

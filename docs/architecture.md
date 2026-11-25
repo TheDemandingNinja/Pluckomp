@@ -12,7 +12,7 @@ TotK Recomp is the model for this project, but the game is built differently:
 | Engine | Nintendo in-house | Unreal Engine 4 |
 | Data | SARC / BFRES / BNTX, zstd | `.pak` / IoStore (`.utoc` / `.ucas`) |
 | Graphics API | NVN | NVN, through UE4's Switch RHI |
-| Audio | Nintendo audio renderer | Engine audio middleware on top of `audren` (to confirm) |
+| Audio | Nintendo audio renderer | Wwise on `audren:u`, `audout:u` and `hwopus` (Opus) |
 
 The CPU half (lifting ARM64 to C) and the OS half (Horizon SVCs, IPC, `nn::*` SDK functions, NVN on Vulkan) carry
 over in design. The game-specific half (patches, version tables, renderer quirks) is new work.
@@ -45,17 +45,25 @@ over in design. The game-specific half (patches, version tables, renderer quirks
   links them and binds host overrides by symbol (`loader.c`, `hostfn.c`); guest memory, threads on virtual cores,
   synchronisation and SVCs (`memory.c`, `kernel.c`, `svc.c`); in-process IPC with `sm:` (`ipc.c`); OS calls behind
   `runtime/platform/`.
-- The OS boundary is the SDK's `nn::*` functions: `fs_host.c`, `romfs.c`, `ov_system.c`, `ov_services.c` and
-  `ov_hid.c` answer them on the host, and the Horizon services behind them are never opened. What is reached and how
-  it is answered: [coverage.md](coverage.md).
+- The OS boundary is the SDK's `nn::*` functions: `fs_host.c`, `romfs.c`, `ov_system.c`, `ov_services.c`,
+  `ov_hid.c` and `ov_movie.c` answer them on the host, and the Horizon services behind them are never opened. Audio is
+  the exception: Wwise drives `nn::audio` and `nn::codec`, whose SDK clients are thin protocol layers, so their
+  services run in process (`audren.c` with the silent mixer `audio_null.c`, `audout.c`, `hwopus.c`; CMIF domains in
+  `ipc.c`). What is reached and how it is answered: [coverage.md](coverage.md).
 - File system serves the extracted RomFS directory in place, so the engine's pak loader reads the user's own files.
 - `boot.c` runs the game's `nn::init::Start` with rtld's three callbacks, the second of which runs every module's
-  constructors.
+  constructors, and ends the checkpoint modes: `--boot` at the first NVN call, `--frames N` at the Nth present.
 - Window, input and audio output through SDL3 (later milestones).
 
 ### 4. Graphics (`runtime/`)
 
-- NVN front end on a Vulkan back end; Maxwell shaders translated to SPIR-V and cached at install.
+- NVN front end from TotK Recomp (`nvn_api_core.c`, `nvn_api_obj.c`, `nvn_api_cmd.c`, `nvn_ext.c`, `nvn_procs.c`):
+  `nvnBootstrapLoader` and `nvnDeviceGetProcAddress` hand out synthetic host addresses for every proc; objects live in
+  the game's own NVN object memory; command buffers record into host op streams that a back end replays at submit.
+- Back ends implement `GfxBackend` (`gfx.h`). Today only the null one (`gfx_null.c`): no GPU, every submit completes
+  at once with its CPU-visible side effects (event signals, counter reports, buffer copies and fills, uniform updates,
+  fence syncs), and each present is logged with its frame number, size and format.
+- Next: a Vulkan back end; Maxwell shaders translated to SPIR-V and cached at install.
 
 ### 5. Installer (`installer/`)
 

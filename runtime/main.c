@@ -5,6 +5,7 @@
 //     --selftest        layout, dispatch table and host-function registry; needs no game files
 //     --probe-loader    load and relocate the modules
 //     --boot            run the game until the first NVN call
+//     --frames N        run the game until its Nth present (null renderer: presents are logged)
 //     (no mode)         run the game
 //
 // Also here: the runtime services the generated code calls besides rt_dispatch and rt_svc (rt_brk, rt_udf,
@@ -543,8 +544,8 @@ static int selftest(void) {
 }
 
 static int usage(const char *argv0) {
-    fprintf(stderr, "usage: %s [--exefs DIR] [--romfs DIR] [--profile DIR] [--selftest | --probe-loader | --boot]\n",
-            argv0);
+    fprintf(stderr, "usage: %s [--exefs DIR] [--romfs DIR] [--profile DIR] "
+                    "[--selftest | --probe-loader | --boot | --frames N]\n", argv0);
     return 2;
 }
 
@@ -567,13 +568,20 @@ int main(int argc, char **argv) {
         if (path) {
             if (++i == argc) return usage(argv[0]);
             *path = argv[i];
+        } else if (!mode && !strcmp(argv[i], "--frames")) {
+            char *end;
+            if (++i == argc) return usage(argv[0]);
+            unsigned long long n = strtoull(argv[i], &end, 10);
+            if (*end || !n) return usage(argv[0]);
+            cfg.frames = n;
+            mode = "--frames";
         } else if (!mode && !strncmp(argv[i], "--", 2)) {
             mode = argv[i];
         } else {
             return usage(argv[0]);
         }
     }
-    log_open(!mode || !strcmp(mode, "--boot"));
+    log_open(!mode || !strcmp(mode, "--boot") || !strcmp(mode, "--frames"));
     if (!mode) {
         rt_boot();
         return 0;
@@ -581,5 +589,6 @@ int main(int argc, char **argv) {
     if (!strcmp(mode, "--selftest")) return selftest();
     if (!strcmp(mode, "--probe-loader")) return probe_loader();
     if (!strcmp(mode, "--boot")) { cfg.boot = 1; rt_boot(); return 0; }
+    if (!strcmp(mode, "--frames")) { rt_boot(); return 0; }
     return usage(argv[0]);
 }

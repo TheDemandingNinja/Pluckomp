@@ -45,7 +45,9 @@ the executable.
 - `pluckomp.exe --selftest` - layout, dispatch table and host functions, without game files
 - `pluckomp.exe --probe-loader` - load and relocate the modules, check the bindings
 - `pluckomp.exe --boot` - run the game to its first NVN call and exit 0
-- `PLUCKOMP_TRACE=svc,host,ipc,fs` - log every SVC, host-function call, IPC request or file open
+- `pluckomp.exe --frames N` - run the game with the null renderer to its Nth present and exit 0
+- `PLUCKOMP_TRACE=svc,host,ipc,fs,gfx` - log every SVC, host-function call, IPC request, file open, or the first call
+  of each NVN proc
 
 ## Checks
 
