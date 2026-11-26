@@ -111,9 +111,9 @@ once the game calls them.
 | `nn::time` | 16 (`ov_system.c`) | host clock and zone | none |
 | `nn::account` | 11 (`ov_system.c`, `ov_services.c`) | one local user; no network service account | none |
 | `nn::aoc` | 4 (`ov_system.c`, `ov_services.c`) | no add-on content | none |
-| `nn::hid` | 30 (`ov_hid.c`) | no controller, keyboard, mouse or touch input (input: Milestone 5); `ShowControllerSupport` returns canceled (hid 202-3101), so the game asks again about every second frame | `VibrationTarget` |
+| `nn::hid` | 30 (`ov_hid.c`) | one connected Pro Controller (player 1) with every button up; no keyboard, mouse or touch input (input: Milestone 5); `ShowControllerSupport` returns at once | `VibrationTarget` |
 | `nn::socket` | 25 (`ov_services.c`) | no network: `Socket` fails with ENETDOWN | none |
-| `nn::nifm`, `nn::bcat`, `nn::ldn` | 14 (`ov_services.c`) | no network, no delivery cache, no local wireless | `nn::nsd::ResolveEx`, `nn::ssl` |
+| `nn::nifm`, `nn::bcat`, `nn::ldn` | 14 (`ov_services.c`) | no network: a submitted request stays on hold for 100 ms, then resolves unavailable; no delivery cache, no local wireless | `nn::nsd::ResolveEx`, `nn::ssl` |
 | `nn::vi`, `nv` | 8 (`ov_services.c`) | display and layer identities, 60 Hz vsync event, graphics allocators recorded | none |
 | `nn::prepo`, `nn::err`, `nn::ec`, `nn::ro`, `nn::pctl`, `nn::diag`, `nn::nfp`, `nn::pl` | (`ov_system.c`, `ov_services.c`) | dropped reports, no shop, no NFC reader, no shared font | `nn::ngc::ProfanityFilter` (system data; not reached in 600 frames) |
 | `nn::audio`, `nn::codec` | none: served as `audren:u`, `audout:u`, `hwopus` | silent | none |
@@ -122,5 +122,15 @@ once the game calls them.
 | NVN, `nvgr_*` | `nvnBootstrapLoader` and every proc (`nvn_procs.c`, `nvn_api_*.c`, `nvn_ext.c`) | null back end: no GPU, presents logged | none |
 
 The movie decoder needs a word: once, on a run before `ov_movie.c` existed, a movie decoder started (Android's ACodec
-in subsdk0) about 60 frames in and aborted in `NvOsDrvOpen`, as TotK Recomp found for its movies. Runs since then sit
-at the controller applet and never build a decoder, so the `Configure` answer has not been exercised yet.
+in subsdk0) about 60 frames in and aborted in `NvOsDrvOpen`, as TotK Recomp found for its movies. Since the boot
+reaches its title (about frame 55) every run builds two decoders for the title's background movie, VP9 (type 3, output
+format 3, mode 2) and its audio track (type 5, format 1, mode 1), and both get the unsupported answer. The game stays in
+its title state with a black picture; a host VP9 decoder (TotK Recomp's libvpx one serves type 3 in buffer mode 1 only)
+is the next step.
+
+The nifm hold needs one too. Pikmin 4's BCAT pre-sync runnable (constructed at main+0x206a6d0) stores its status 1
+after `FRunnableThread::Create` returns, while the thread's `Run` (main+0x206a830) submits a network request, polls
+`IsNetworkRequestOnHold` every 10 ms and stores status 6 when the request resolves without a network. A request that
+resolved at once let `Run` finish first in most runs; status 1 then overwrote the 6 and the boot sequence waited in its
+`WaitPreSyncBCAT` state forever. On a console the request is an IPC round trip and stays on hold while nifm evaluates
+it, so the creator always stores first.

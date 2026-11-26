@@ -153,15 +153,42 @@ HOST_OVERRIDE("_ZN2nn2oe31LeaveExitRequestHandlingSectionEv", ov_void);
 HOST_OVERRIDE("_ZN2nn2oe14ExecuteProgramEiPKvm", ov_execute_program);
 
 // ---- nn::nifm: no network. Requests are accepted and never become available.
+// A submitted request stays on hold for NIFM_HOLD_NS before it resolves to "no network", as the real service takes a
+// while to evaluate it. Pikmin 4 depends on that: its BCAT pre-sync runnable (main+0x206a6d0 constructs it) stores
+// status 1 after FRunnableThread::Create returns, while the new thread's Run (main+0x206a830) submits a request,
+// polls IsNetworkRequestOnHold every 10 ms and stores status 6 when it resolves without a network. A request that
+// resolved at once let Run finish first; status 1 then overwrote the 6 and the boot sequence waited in its
+// WaitPreSyncBCAT state forever, on a black screen after the startup logo.
+#define NIFM_HOLD_NS 100000000ull
+static uint64_t nifm_submitted;   // kern_now_ns of the pending request, 0 when none is on hold
+
+static void ov_nifm_submit(Cpu *c) {
+    (void)c;
+    __atomic_store_n(&nifm_submitted, kern_now_ns() | 1, __ATOMIC_RELAXED);
+}
+
+static void ov_nifm_on_hold(Cpu *c) {
+    uint64_t t = __atomic_load_n(&nifm_submitted, __ATOMIC_RELAXED);
+    int hold = t && kern_now_ns() - t < NIFM_HOLD_NS;
+    if (t && !hold) __atomic_compare_exchange_n(&nifm_submitted, &t, 0, 0, __ATOMIC_RELAXED, __ATOMIC_RELAXED);
+    ret_x(c, (uint64_t)hold);
+}
+
+// SubmitNetworkRequestAndWait returns once the request has resolved; Cancel ends the hold.
+static void ov_nifm_resolved(Cpu *c) {
+    (void)c;
+    __atomic_store_n(&nifm_submitted, 0, __ATOMIC_RELAXED);
+}
+
 static void ov_nifm_handle_error(Cpu *c) { ret_x(c, NIFM_R_NOT_AVAILABLE); }
 static void ov_nifm_proxy(Cpu *c) { ret_x(c, NIFM_R_NOT_AVAILABLE); }
 
 HOST_OVERRIDE("_ZN2nn4nifm10InitializeEv", ov_ok);
 HOST_OVERRIDE("_ZN2nn4nifm18IsNetworkAvailableEv", ov_false);
-HOST_OVERRIDE("_ZN2nn4nifm20SubmitNetworkRequestEv", ov_void);
-HOST_OVERRIDE("_ZN2nn4nifm27SubmitNetworkRequestAndWaitEv", ov_void);
-HOST_OVERRIDE("_ZN2nn4nifm22IsNetworkRequestOnHoldEv", ov_false);
-HOST_OVERRIDE("_ZN2nn4nifm20CancelNetworkRequestEv", ov_void);
+HOST_OVERRIDE("_ZN2nn4nifm20SubmitNetworkRequestEv", ov_nifm_submit);
+HOST_OVERRIDE("_ZN2nn4nifm27SubmitNetworkRequestAndWaitEv", ov_nifm_resolved);
+HOST_OVERRIDE("_ZN2nn4nifm22IsNetworkRequestOnHoldEv", ov_nifm_on_hold);
+HOST_OVERRIDE("_ZN2nn4nifm20CancelNetworkRequestEv", ov_nifm_resolved);
 HOST_OVERRIDE("_ZN2nn4nifm31HandleNetworkRequestErrorResultEv", ov_nifm_handle_error);
 HOST_OVERRIDE("_ZN2nn4nifm22GetCurrentProxySettingEPNS0_12ProxySettingE", ov_nifm_proxy);
 

@@ -49,9 +49,11 @@ patches, frame-ahead sync).
 - [x] `--frames N` with the Vulkan back end (600 pass, every draw recorded, no shader failures), `--null-gfx`, and
   `--shot PATH`
 - [x] One connected controller without input (`runtime/ov_hid.c`), so the controller applet returns at once
-- [ ] The title screen drawn: after its startup logo the game stays on a black frame and loads nothing more after
-  frame 48, on the null back end too, so the wait is on the game's side. Without a controller it went on to open its
-  movie decoders (frame 55), which answer unsupported; with one it does not reach them
+- [x] Boot to the title state: the boot sequence used to wait forever in `WaitPreSyncBCAT` after the startup logo, a
+  race in the game's BCAT pre-sync thread that a nifm request resolving at once exposed; a request now stays on hold for
+  100 ms (`runtime/ov_services.c`, docs/coverage.md), and every run reaches `OnMenuTitle` / `MenuTitle` at frame 55
+- [ ] The title screen drawn: the title's background is a VP9 movie (decoder type 3, mode 2) whose `Configure` answers
+  unsupported (`runtime/ov_movie.c`), and the picture stays black; a host VP9 decoder comes next
 - [ ] Vulkan validation layer runs; the recorder thread (`vk_rec.c`)
 
 ## Milestone 5 - Playable
