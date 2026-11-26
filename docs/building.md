@@ -4,7 +4,10 @@
 
 - Python 3.12+ in `.venv` (`python -m venv .venv`, then `.venv\Scripts\pip install -r requirements.txt`)
 - MSYS2 UCRT64 Clang and Ninja (`C:\msys64\ucrt64\bin`); generated C uses GNU extensions, so MSVC `cl.exe` is out
-- Vulkan SDK (for `glslc` and validation layers) and SPIRV-Tools (`spirv-val`; MSYS2 has it in CLANG64)
+- MSYS2 CLANG64 packages for the Vulkan back end: `mingw-w64-clang-x86_64-vulkan-devel` (headers, loader import
+  library), `-sdl3`, `-vulkan-memory-allocator`, `-shaderc` (`glslc`) and `-spirv-tools` (`spirv-val`).
+  `tools/build_game.py` reads their headers and libraries from `C:\msys64\clang64` (after the compiler's own headers)
+  and copies `SDL3.dll` and `libiconv-2.dll` next to the executable. A Vulkan 1.3 driver is needed to run.
 - .NET 10 SDK and the Visual Studio Build Tools (C++), for the NativeAOT shader translator
 - Git
 
@@ -49,7 +52,14 @@ the executable.
 - `pluckomp.exe --selftest` - layout, dispatch table and host functions, without game files
 - `pluckomp.exe --probe-loader` - load and relocate the modules, check the bindings
 - `pluckomp.exe --boot` - run the game to its first NVN call and exit 0
-- `pluckomp.exe --frames N` - run the game with the null renderer to its Nth present and exit 0
+- `pluckomp.exe --frames N` - run the game to its Nth present and exit 0. A window opens; shaders are translated on
+  first use (the translator must be built) and cached in `shader-cache/` next to the executable, pipelines in
+  `pipeline-cache.bin` and `pipeline-keys.bin`
+- `--null-gfx` - the null graphics back end: no GPU and no window, presents are logged
+- `--shot PATH` - with `--frames N`, save the Nth presented picture as a PNG
+- `PLUCKOMP_VK_VALIDATION=1` - the Khronos validation layer, when installed; `PLUCKOMP_TRACE=gfx` adds a line per frame
+  with its submits, passes, draws recorded of those seen, clears, copies and dispatches; `PLUCKOMP_TRACE=perf` the
+  frame timing every 60 presents
 - `PLUCKOMP_TRACE=svc,host,ipc,fs,gfx` - log every SVC, host-function call, IPC request, file open, or the first call
   of each NVN proc
 
@@ -58,6 +68,8 @@ the executable.
 - `python tools/check_content.py` - the content guard CI runs
 - `python tests/check_content_test.py` - unit checks for the guard
 - `python tests/extract_test.py` - round trips of the extractor on synthetic NSP / XCI images
+- `python tools/build_shaders.py --check` - the runtime's own GLSL shaders match their committed SPIR-V headers
+  (`python tools/build_shaders.py` rebuilds them after a shader edit)
 - `python tests/xlate_smoke.py` - a hand-assembled fragment shader through the translator's `--serve` loop, SPIR-V
   checked with `spirv-val`
 

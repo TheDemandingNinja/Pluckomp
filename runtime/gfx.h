@@ -1,8 +1,8 @@
 // Adapted from TotK Recomp runtime/gfx.h @ afae80c (MIT, Copyright (c) 2026 Valiantsin Dzerakh).
-// Interface of the graphics layer: the NVN front end (nvn_*.c) and its back end. The null back end (gfx_null.c) is the
-// only one for now: no GPU, presents are logged. The window, shader service and Vulkan back end of TotK Recomp are not
-// ported.
+// Interface of the graphics layer: window, shader service, back ends and the NVN front end (nvn_*.c). Two back ends:
+// Vulkan (vk_*.c, the default) and null (gfx_null.c, --null-gfx: no GPU, presents are logged).
 #pragma once
+#include <stddef.h>
 #include <stdint.h>
 
 #include "host.h"
@@ -17,7 +17,82 @@ void oe_set_focus(int in_focus);                          // ov_system.c: GetCur
 #define RT_GPU_VA_BASE 0x8000000000ull                     // 2^39, never mapped on the host
 #define RT_GPU_VA_SIZE (64ull << 30)
 
-// ---- back end. Called by the NVN front end (nvn_api_*.c, nvn_ext.c) on guest threads.
+// ---- window and vsync (gfx_present.c and the window back end, gfx_wsys.h; vk_device.c). Host threads only; never run
+// guest code.
+void gfx_window_start(void);                               // window thread, Vulkan device, swapchain; idempotent
+void gfx_vsync_bind(uint64_t system_event);                // nn::vi vsync event; signalled at 60 Hz
+uint64_t gfx_vsync_ticks(void);                            // ticks since start
+uint64_t gfx_vsync_time_ns(uint64_t tick);                 // kern_now_ns() time of a tick (pacing)
+double gfx_window_refresh_hz(void);                        // refresh rate of the window's monitor; 0 unknown
+int gfx_window_focused(void);
+uint64_t gfx_presents_shown(void);                         // gfx_present.c: presents queued since the start
+
+// ---- shader service client (gfx_shader.c): Maxwell programs through build/xlate/pluckomp_xlate --serve
+enum { GFX_STAGE_VS, GFX_STAGE_TCS, GFX_STAGE_TES, GFX_STAGE_GS, GFX_STAGE_FS, GFX_STAGE_CS };
+enum { GFX_TEX_1D = 1, GFX_TEX_1D_ARRAY, GFX_TEX_BUFFER, GFX_TEX_2D, GFX_TEX_2D_ARRAY, GFX_TEX_2D_MS,
+       GFX_TEX_2D_MS_ARRAY, GFX_TEX_3D, GFX_TEX_CUBE, GFX_TEX_CUBE_ARRAY };   // gfx_shader.c tex_names order
+enum { GFX_TYPE_FLOAT, GFX_TYPE_SINT, GFX_TYPE_UINT };
+typedef struct {                                           // the translator's answers (Program.cs Accessor)
+    uint8_t tex_type[32], img_type[32], img_format[32];    // per c2 slot; 0 = not asked; types are GFX_TEX_*,
+                                                           // img_format is Ryujinx TextureFormat
+    uint8_t attr_type[32], frag_out_type[8];               // GFX_TYPE_*
+    uint16_t local[3]; uint32_t shared_bytes;
+    uint8_t depth_minus_w;
+} GfxShaderAnswers;
+typedef struct GfxShader GfxShader;                        // SPIR-V words + parsed reflection; owned by the cache
+const GfxShader *gfx_shader_get(int stage, const uint8_t *control, const uint8_t *code, uint64_t code_size,
+                                const uint8_t *c1, const GfxShaderAnswers *a);   // blocks; NULL on failure (counted)
+// As gfx_shader_get with c1 inside the code, but a shader in neither cache is queued to a background translation and
+// NULL returned with *pending = 1 until it is ready. A failed translation stays failed (*pending = 0).
+const GfxShader *gfx_shader_get_async(int stage, const uint8_t *control, const uint8_t *code, uint64_t code_size,
+                                      const GfxShaderAnswers *a, int *pending);
+// As gfx_shader_get_async, but a shader queued for translation is moved to the front of the queue and waited for.
+// NULL when the translation failed.
+const GfxShader *gfx_shader_await(int stage, const uint8_t *control, const uint8_t *code, uint64_t code_size,
+                                  const GfxShaderAnswers *a);
+uint64_t gfx_shader_async_done(void);                      // translations finished by the background worker
+void gfx_shader_counts(uint64_t *keys, uint64_t *translated);   // distinct keys in memory, translations done
+// Translator answers for this device (vk_caps.c): shaderFloat64, storage offset rounding, subgroup size per vs/fs/cs.
+void gfx_shader_set_host(int float64, uint32_t sbuf_align, const uint32_t subgroup[3], uint32_t gather_bits, int zero_locals);
+const uint8_t *gfx_shader_key(const GfxShader *s);          // the 32-byte cache key (stable while the translator is)
+const uint8_t *gfx_shader_input_id(const GfxShader *s);     // the 32-byte input id (stable across translators)
+// By input id from memory or disk; xlate 1 also translates it from its stored inputs. NULL if absent.
+const GfxShader *gfx_shader_load_input(const uint8_t iid[32], int xlate);
+// Boot prewarm: out[i] = gfx_shader_load_input(iids[i], 1) on `threads` threads with up to `procs` translators, then
+// every other stored input not cached under this translator is translated. Logs progress and the total.
+void gfx_shader_prewarm(const uint8_t (*iids)[32], size_t n, const GfxShader **out, int threads, int procs);
+// Disk-cache load the caller owns (*owned 1: release it), or the memory cache's entry (*owned 0). NULL if not cached.
+const GfxShader *gfx_shader_load_private(const uint8_t iid[32], int *owned);
+void gfx_shader_release_private(const GfxShader *s);
+const uint32_t *gfx_shader_spirv(const GfxShader *s, uint64_t *words);
+// A shader of the runtime's own (SPIR-V and a .res.json text as the translator writes them), outside the cache and
+// never freed; its key is the sha256 of both. NULL when the SPIR-V is malformed.
+const GfxShader *gfx_shader_own(const uint32_t *spirv, uint64_t words, const char *res_json);
+uint64_t gfx_shader_failures(void);                         // failed translations; feeds GfxStats.shader_failures
+// Reflection: parsed once per shader from the translator's .res.json and the SPIR-V before it enters the cache.
+enum { GFX_RES_UBO, GFX_RES_SSBO, GFX_RES_TEX, GFX_RES_IMG, GFX_RES_KINDS };
+typedef struct {
+    uint16_t set, binding;      // as the SPIR-V decorates them: set 0, bindings from 1 per shader (0: support buffer)
+    int16_t slot;               // UBO: c[slot]; SSBO: storage buffer index; TEX: c2 combined slot (handle at 0x20 + 8 slot)
+                                // or, separate, texture slot (0x168 + 8 slot); IMG: image slot (0x120 + 8 slot); -1: other
+    uint16_t type;              // TEX/IMG: Ryujinx SamplerType: 1 1D, 2 buffer, 3 2D, 4 3D, 5 cube | 0x100 array,
+                                // 0x200 multisample, 0x400 shadow
+    uint8_t format;             // IMG: declared format as a GfxShaderAnswers.img_format code, 0 unknown
+    uint8_t flags;              // SSBO: 1 written; TEX/IMG: Ryujinx TextureUsageFlags (4 image store, 8 coherent)
+    int8_t cbuf_slot;           // TEX/IMG: constant buffer of the handle (-1: bound texture buffer); SSBO: of its address
+    uint16_t handle;            // TEX/IMG: raw handle (word offset; separate: texture | sampler << 14); SSBO: address offset
+    uint16_t count;             // descriptors (array length)
+    uint8_t separate;           // TEX: texture and sampler handles are separate
+} GfxShaderRes;
+typedef struct { uint8_t type, comps, packed; } GfxShaderIo;   // GFX_TYPE_*, components, 1 with a Component decoration
+int gfx_shader_stage(const GfxShader *s);                   // GFX_STAGE_VS, GFX_STAGE_FS or GFX_STAGE_CS
+int gfx_shader_resources(const GfxShader *s, int kind, const GfxShaderRes **res);   // count of GFX_RES_* kind; array in *res
+uint32_t gfx_shader_slot_mask(const GfxShader *s);                    // texture/image slots whose type its translation read
+uint32_t gfx_shader_inputs(const GfxShader *s, GfxShaderIo io[32]);    // Input Locations (VS attributes, FS varyings) as a mask
+uint32_t gfx_shader_outputs(const GfxShader *s, GfxShaderIo io[32]);   // Output Locations (VS varyings, FS colour targets)
+void gfx_shader_local_size(const GfxShader *s, uint32_t local[3]);     // CS: the LocalSize execution mode; 1, 1, 1 otherwise
+
+// ---- back end (gfx_null.c, vk_*.c). Called by the NVN front end (nvn_api_*.c, nvn_ext.c) on guest threads.
 typedef struct {
     const char *name;
     int  (*pool_init)(pool_t *p);                          // 0 fails MemoryPoolInitialize
@@ -38,16 +113,26 @@ typedef struct {
     void (*write_texels)(const tex_t *t, const view_t *v, const NVNcopyRegion *r, const uint8_t *src, uint64_t row, uint64_t img);
     void (*guest_written)(uint64_t addr, uint64_t size);   // host wrote pool storage
     void (*guest_read)(uint64_t addr, uint64_t size);      // the CPU reads pool storage: GPU-written texels go there first
-    void (*cpu_synced)(uint64_t fence);                    // the CPU waited for fence
+    // The CPU waited for fence: small render targets written by work up to it go to their storage (vk_texture.c
+    // vk_texture_write_back_small).
+    void (*cpu_synced)(uint64_t fence);
 } GfxBackend;
-extern const GfxBackend gfx_null_backend;
-const GfxBackend *gfx_backend(void);                       // the null back end
+extern const GfxBackend gfx_null_backend, gfx_vulkan_backend;
+const GfxBackend *gfx_backend(void);                       // Vulkan; null with --null-gfx (rt_config()->null_gfx)
 
 // ---- NVN front end (nvn_procs.c)
 void nvn_procs_register(void);                             // hostfn_register every proc; before hostfn_seal
 uint64_t nvn_proc_address(const char *name);               // synthetic host address of a proc, 0 for an unknown name
 
-// ---- statistics and frames (nvn_api_*.c, gfx_null.c; boot.c prints them)
-typedef struct { uint64_t frames, nvn_calls, nvn_distinct, unimplemented; } GfxStats;
+// ---- statistics and frames (nvn_api_*.c, gfx_null.c, vk_*.c; boot.c prints them)
+typedef struct { uint64_t frames, nvn_calls, nvn_distinct, unimplemented, validation_errors, shader_failures,
+                 draws_skipped; } GfxStats;
 GfxStats gfx_stats(void);
-void rt_frame_presented(uint64_t n);                       // boot.c: --frames N ends the run after the Nth present
+// boot.c: --frames N ends the run after the Nth present of t (--shot saves it first through read_texels)
+void rt_frame_presented(const tex_t *t, uint64_t n);
+void gfx_present_shot(const char *path);                   // gfx_present.c: the next present's window image as a PNG
+void rt_write_png(const char *path, const uint8_t *rgba, uint32_t w, uint32_t h);   // boot.c; fatal on a write error
+int gfx_replay_async(void);                                // vk_backend.c: PLUCKOMP_REPLAY_ASYNC in effect
+void vk_pipeline_async_enable(void);                       // vk_pipeline.c: pipelines build in the background
+void vk_pipeline_prewarm(void);                            // vk_pipeline.c: last runs' pipelines, before the guest runs
+void vk_pipeline_save(void);                               // vk_pipeline.c: the pipeline cache to disk

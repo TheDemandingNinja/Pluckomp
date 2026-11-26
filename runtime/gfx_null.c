@@ -24,11 +24,21 @@ GfxStats gfx_stats(void) {
     s.nvn_calls = __atomic_load_n(&gfx_counters.nvn_calls, __ATOMIC_RELAXED);
     s.nvn_distinct = __atomic_load_n(&gfx_counters.nvn_distinct, __ATOMIC_RELAXED);
     s.unimplemented = __atomic_load_n(&gfx_counters.unimplemented, __ATOMIC_RELAXED);
+    s.validation_errors = __atomic_load_n(&gfx_counters.validation_errors, __ATOMIC_RELAXED);
+    s.shader_failures = __atomic_load_n(&gfx_counters.shader_failures, __ATOMIC_RELAXED);
+    s.draws_skipped = __atomic_load_n(&gfx_counters.draws_skipped, __ATOMIC_RELAXED);
     return s;
 }
 
-// The only back end so far; the Vulkan one comes with Milestone 4.
-const GfxBackend *gfx_backend(void) { return &gfx_null_backend; }
+// Vulkan unless --null-gfx; chosen once.
+const GfxBackend *gfx_backend(void) {
+    static const GfxBackend *chosen;
+    const GfxBackend *b = __atomic_load_n(&chosen, __ATOMIC_ACQUIRE);
+    if (b) return b;
+    b = rt_config()->null_gfx ? &gfx_null_backend : &gfx_vulkan_backend;
+    __atomic_store_n(&chosen, b, __ATOMIC_RELEASE);
+    return b;
+}
 
 static uint64_t fence;
 

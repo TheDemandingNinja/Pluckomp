@@ -18,6 +18,7 @@
 #include "fs.h"
 #include "gfx.h"
 #include "host.h"
+#include "nvn.h"
 #include "platform/platform.h"
 
 #define SYM_INIT_START "_ZN2nn4init5StartEmmPFvvES2_S2_"
@@ -96,6 +97,8 @@ static void run_end(void) {
     fflush(stdout);
     fflush(stderr);
     fs_save_flush();
+    if (!rt_config()->null_gfx) vk_pipeline_save();
+    prof_write();   // plat_exit runs no atexit handlers
     plat_exit(0);   // other guest threads are still running; nothing of theirs needs an orderly end
 }
 
@@ -107,13 +110,108 @@ void rt_boot_event(const char *what, Cpu *c, const char *detail) {
     if (rt_config()->boot) run_end();
 }
 
-// The nth present of the game's window (n from 1). --frames N ends the run at the Nth.
-void rt_frame_presented(uint64_t n) {
-    uint64_t want = rt_config()->frames;
+// ---- --shot: the presented texture as a PNG
+// A PNG with stored (uncompressed) deflate blocks: no compression library, and the shot is only read by tools.
+// From TotK Recomp runtime/boot.c rt_write_png.
+static uint32_t crc32_update(uint32_t crc, const uint8_t *p, size_t n) {
+    static uint32_t table[256];
+    if (!table[1])
+        for (uint32_t i = 0; i < 256; i++) {
+            uint32_t c = i;
+            for (int k = 0; k < 8; k++) c = c & 1 ? 0xEDB88320u ^ (c >> 1) : c >> 1;
+            table[i] = c;
+        }
+    for (size_t i = 0; i < n; i++) crc = table[(crc ^ p[i]) & 0xFF] ^ (crc >> 8);
+    return crc;
+}
+
+static void png_chunk(FILE *f, const char *type, const uint8_t *data, uint32_t n) {
+    uint8_t hdr[8] = {(uint8_t)(n >> 24), (uint8_t)(n >> 16), (uint8_t)(n >> 8), (uint8_t)n};
+    memcpy(hdr + 4, type, 4);
+    uint32_t crc = crc32_update(crc32_update(~0u, hdr + 4, 4), data, n) ^ ~0u;
+    uint8_t tail[4] = {(uint8_t)(crc >> 24), (uint8_t)(crc >> 16), (uint8_t)(crc >> 8), (uint8_t)crc};
+    fwrite(hdr, 1, 8, f);
+    if (n) fwrite(data, 1, n, f);
+    fwrite(tail, 1, 4, f);
+}
+
+void rt_write_png(const char *path, const uint8_t *rgba, uint32_t w, uint32_t h) {
+    uint64_t row = 1 + 4ull * w, raw_n = row * h;
+    uint8_t *raw = malloc(raw_n);
+    if (!raw) rt_fatal("boot: out of memory for the shot");
+    for (uint32_t y = 0; y < h; y++) {
+        raw[y * row] = 0;   // filter: none
+        memcpy(raw + y * row + 1, rgba + 4ull * w * y, 4ull * w);
+    }
+    uint64_t blocks = (raw_n + 65534) / 65535;
+    uint8_t *z = malloc(2 + raw_n + 5 * blocks + 4);
+    if (!z) rt_fatal("boot: out of memory for the shot");
+    uint64_t zn = 0;
+    z[zn++] = 0x78, z[zn++] = 0x01;
+    uint32_t a = 1, b = 0;
+    for (uint64_t off = 0; off < raw_n; off += 65535) {
+        uint32_t k = raw_n - off > 65535 ? 65535 : (uint32_t)(raw_n - off);
+        z[zn++] = off + k >= raw_n;
+        z[zn++] = (uint8_t)k, z[zn++] = (uint8_t)(k >> 8), z[zn++] = (uint8_t)~k, z[zn++] = (uint8_t)(~k >> 8);
+        memcpy(z + zn, raw + off, k);
+        zn += k;
+        for (uint32_t i = 0; i < k; i++) a = (a + raw[off + i]) % 65521, b = (b + a) % 65521;
+    }
+    uint32_t ad = b << 16 | a;
+    z[zn++] = (uint8_t)(ad >> 24), z[zn++] = (uint8_t)(ad >> 16), z[zn++] = (uint8_t)(ad >> 8), z[zn++] = (uint8_t)ad;
+    FILE *f = fopen(path, "wb");
+    if (!f) rt_fatal("boot: cannot write %s", path);
+    static const uint8_t sig[8] = {0x89, 'P', 'N', 'G', 13, 10, 26, 10};
+    uint8_t ihdr[13] = {(uint8_t)(w >> 24), (uint8_t)(w >> 16), (uint8_t)(w >> 8), (uint8_t)w,
+                        (uint8_t)(h >> 24), (uint8_t)(h >> 16), (uint8_t)(h >> 8), (uint8_t)h, 8, 6, 0, 0, 0};
+    fwrite(sig, 1, 8, f);
+    png_chunk(f, "IHDR", ihdr, 13);
+    png_chunk(f, "IDAT", z, (uint32_t)zn);
+    png_chunk(f, "IEND", NULL, 0);
+    if (fclose(f)) rt_fatal("boot: cannot write %s", path);
+    free(z);
+    free(raw);
+}
+
+// The presented texture through the back end's ReadTexels (8-bit RGBA or BGRA), as TotK Recomp runtime/boot.c
+// save_shot does.
+static void save_shot(const tex_t *t, const char *path) {
+    int fmt = t->d.format;
+    int bgra = fmt == NVN_FORMAT_BGRA8 || fmt == NVN_FORMAT_BGRA8_SRGB;
+    if (!bgra && fmt != NVN_FORMAT_RGBA8 && fmt != NVN_FORMAT_RGBA8_SRGB)
+        rt_fatal("boot: --shot supports 8-bit RGBA and BGRA targets, the presented texture has NVN format %#x", fmt);
+    uint32_t w = t->d.width, h = t->d.height;
+    uint8_t *px = malloc(4ull * w * h);
+    if (!px) rt_fatal("boot: out of memory for the shot");
+    view_t view;
+    memset(&view, 0, sizeof view);
+    NVNcopyRegion r = {.width = (int)w, .height = (int)h, .depth = 1};
+    if (!rt_config()->null_gfx && gfx_replay_async()) gfx_backend()->finish();   // the frame may still be queued
+    gfx_backend()->read_texels(t, &view, &r, px, 4ull * w, 4ull * w * h);
+    if (bgra)
+        for (uint64_t i = 0; i < 4ull * w * h; i += 4) {
+            uint8_t x = px[i];
+            px[i] = px[i + 2];
+            px[i + 2] = x;
+        }
+    for (uint64_t i = 3; i < 4ull * w * h; i += 4) px[i] = 255;   // the window's alpha is not shown
+    rt_write_png(path, px, w, h);
+    free(px);
+    rt_logf("boot: shot %s (%ux%u)\n", path, w, h);
+}
+
+// The nth present of the game's window t (n from 1). --frames N ends the run at the Nth.
+void rt_frame_presented(const tex_t *t, uint64_t n) {
+    const RtConfig *cfg = rt_config();
+    uint64_t want = cfg->frames;
     if (!want || n < want) return;
+    if (cfg->shot) save_shot(t, cfg->shot);
     GfxStats g = gfx_stats();
-    rt_logf("boot: present %llu reached (nvn calls %llu, distinct procs %llu)\n", (unsigned long long)n,
-            (unsigned long long)g.nvn_calls, (unsigned long long)g.nvn_distinct);
+    rt_logf("boot: present %llu reached (nvn calls %llu, distinct procs %llu, unimplemented %llu, validation errors "
+            "%llu, shader failures %llu, draws skipped %llu)\n", (unsigned long long)n,
+            (unsigned long long)g.nvn_calls, (unsigned long long)g.nvn_distinct, (unsigned long long)g.unimplemented,
+            (unsigned long long)g.validation_errors, (unsigned long long)g.shader_failures,
+            (unsigned long long)g.draws_skipped);
     run_end();
 }
 
@@ -131,15 +229,32 @@ static void guest_main(Cpu *c) {
     rt_fatal("boot: nn::init::Start returned");
 }
 
+static void prewarm_main(void *arg) {
+    (void)arg;
+    vk_pipeline_prewarm();
+}
+
 void rt_boot(void) {
     check_npdm();
-    ldr_load(rt_config()->exefs);
+    const RtConfig *cfg = rt_config();
+    rt_log("boot: graphics back end %s", gfx_backend()->name);
+    PlatThread *warm = NULL;
+    if (!cfg->null_gfx) {
+        if (!cfg->shot) vk_pipeline_async_enable();   // a --shot image must not depend on build timing
+        // Shaders and pipelines recorded in earlier runs are made ready while the modules load; the guest waits.
+        warm = plat_thread_new(prewarm_main, NULL, "prewarm");
+    }
+    ldr_load(cfg->exefs);
     cb_addr[0] = hostfn_register("<rtld loader_ready>", cb_loader_ready);
     cb_addr[1] = hostfn_register("<rtld module_inits>", cb_module_inits);
     cb_addr[2] = hostfn_register("<rtld module_finis>", cb_module_finis);
     hostfn_seal();
-    rt_log("boot: guest starts %llu ms after process start",
-           (unsigned long long)(plat_process_uptime_ns() / 1000000));
+    uint64_t held = plat_now_ms();
+    if (warm) plat_thread_join(warm);
+    else if (!cfg->null_gfx) vk_pipeline_prewarm();
+    held = plat_now_ms() - held;
+    rt_log("boot: guest starts %llu ms after process start (%llu ms of it waiting for the prewarm)",
+           (unsigned long long)(plat_process_uptime_ns() / 1000000), (unsigned long long)held);
     rt_guest_start_ns = kern_now_ns();
     kern_run_on_guest_main(guest_main);
     rt_fatal("boot: the guest main thread ended");

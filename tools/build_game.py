@@ -25,6 +25,7 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+from build_shaders import stale as stale_shaders  # noqa: E402
 from check_content import GENERATED_MARKER  # noqa: E402
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -32,6 +33,13 @@ RUNTIME = ROOT / 'runtime'
 WIN = os.name == 'nt'
 EXE = 'pluckomp.exe' if WIN else 'pluckomp'
 UCRT = Path(r'C:\msys64\ucrt64\bin')
+# The Vulkan headers and loader import library, SDL3, the Vulkan Memory Allocator header, glslc and spirv-val come from
+# MSYS2 CLANG64 (packages mingw-w64-clang-x86_64-vulkan-devel, -sdl3, -vulkan-memory-allocator, -shaderc,
+# -spirv-tools). Its headers are searched after the compiler's own (-idirafter), so its C library headers never
+# replace those of the compiler in use.
+CLANG64 = Path(r'C:\msys64\clang64')
+# DLLs pluckomp.exe loads from its own folder: SDL3 and the libiconv it imports.
+RUNTIME_DLLS = [CLANG64 / 'bin' / 'SDL3.dll', CLANG64 / 'bin' / 'libiconv-2.dll'] if WIN else []
 
 # Flags for generated code as TotK Recomp builds it (LAS Recomp's GENFLAGS plus -march for the FP/SIMD lowering).
 GEN_FLAGS = ['-O1', '-fno-strict-aliasing', '-Wno-return-type', '-Wno-unused-label', '-fvisibility=hidden',
@@ -40,7 +48,14 @@ RT_FLAGS = ['-O2', '-g', '-Wall', '-Wno-unused-function', '-fno-strict-aliasing'
 if WIN:
     RT_FLAGS.append('-D_WIN32_WINNT=0x0A00')   # Windows 10 APIs (CPU sets, stack limits); llvm-mingw defaults lower
 LINK_FLAGS = ['-fuse-ld=lld'] + (['-Wl,--stack,8388608'] if WIN else ['-pthread'])
-LINK_LIBS = ['-lbcrypt', '-lsynchronization', '-lntdll', '-lwinmm'] if WIN else ['-lm', '-ldl']
+CXX_FLAGS = ['-O2', '-g', '-march=x86-64-v3', '-std=c++17', '-Wno-nullability-completeness']   # vk_vma.cpp only
+if WIN:
+    RT_FLAGS += ['-idirafter', str(CLANG64 / 'include'), '-idirafter', str(CLANG64 / 'include' / 'vma')]
+    CXX_FLAGS += ['-idirafter', str(CLANG64 / 'include'), '-idirafter', str(CLANG64 / 'include' / 'vma')]
+    LINK_FLAGS += ['-L', str(CLANG64 / 'lib')]
+LINK_LIBS = (['-lbcrypt', '-lsynchronization', '-lntdll', '-lwinmm', '-lvulkan-1', '-lSDL3', '-luser32', '-lgdi32',
+              '-lshell32', '-lole32', '-Wl,-Bstatic', '-lc++', '-Wl,-Bdynamic'] if WIN
+             else ['-lvulkan', '-lSDL3', '-l:libstdc++.a', '-lm', '-ldl'])
 # Peak commit of one generated-chunk compile at -O1 (TotK Recomp's measurement: 120-180 MiB per ~3 MiB chunk, more for
 # the function tables), with headroom.
 JOB_MEM = 400 * 2**20
@@ -129,7 +144,7 @@ def module_glue(layout, linked, hashes, paths):
 
 def runtime_sources():
     other = 'linux.c' if WIN else 'win32.c'
-    return sorted(p for p in RUNTIME.rglob('*.c')
+    return sorted(p for p in list(RUNTIME.rglob('*.c')) + list(RUNTIME.glob('*.cpp'))
                   if p.name != other and 'third_party' not in p.parts and not p.name.endswith('_test.c'))
 
 
@@ -139,7 +154,7 @@ def write_if_changed(path, text):
         path.write_text(text, encoding='utf-8')
 
 
-def ninja_file(gen, out, mods, depth, cc, runtime_only):
+def ninja_file(gen, out, mods, depth, cc, cxx, runtime_only):
     inc = f'-I {cmd_path(RUNTIME)} -I {cmd_path(gen)}'
     lines = [
         '# Written by tools/build_game.py; do not edit.',
@@ -147,14 +162,18 @@ def ninja_file(gen, out, mods, depth, cc, runtime_only):
         f'builddir = {ninja_path(out)}',
         f'cc = {cmd_path(cc)}',
         f'genflags = {" ".join(GEN_FLAGS)} {inc}',
-        f'rtflags = {" ".join(RT_FLAGS)} {inc}',
-        f'ldflags = {" ".join(LINK_FLAGS)}',
+        f'rtflags = {" ".join(cmd_path(f) for f in RT_FLAGS)} {inc}',
+        f'cxx = {cmd_path(cxx)}',
+        f'cxxflags = {" ".join(cmd_path(f) for f in CXX_FLAGS)} {inc}',
+        f'ldflags = {" ".join(cmd_path(f) for f in LINK_FLAGS)}',
         f'libs = {" ".join(LINK_LIBS)}',
         '', 'pool gen', f'  depth = {depth}', '',
         'rule cc_gen', '  command = $cc $genflags -MD -MF $out.d -c $in -o $out', '  deps = gcc',
         '  depfile = $out.d', '  description = CC $in', '',
         'rule cc_rt', '  command = $cc $rtflags -MD -MF $out.d -c $in -o $out', '  deps = gcc',
         '  depfile = $out.d', '  description = CC $in', '',
+        'rule cxx_rt', '  command = $cxx $cxxflags -MD -MF $out.d -c $in -o $out', '  deps = gcc',
+        '  depfile = $out.d', '  description = CXX $in', '',
         'rule link', '  command = $cc $ldflags @$out.rsp $libs -o $out', '  rspfile = $out.rsp',
         '  rspfile_content = $in_newline', '  description = LINK $out', '',
     ]
@@ -168,7 +187,8 @@ def ninja_file(gen, out, mods, depth, cc, runtime_only):
     for src in runtime_sources() + ([] if runtime_only else [out / 'modules.c']):
         rel = src.relative_to(RUNTIME) if src.is_relative_to(RUNTIME) else Path(src.name)
         o = out / 'obj' / 'runtime' / rel.with_suffix('.o')
-        lines.append(f'build {ninja_path(o)}: cc_rt {ninja_path(src)}')
+        rule = 'cxx_rt' if src.suffix == '.cpp' else 'cc_rt'
+        lines.append(f'build {ninja_path(o)}: {rule} {ninja_path(src)}')
         rt_objs.append(o)
     every = gen_objs + rt_objs
     lines.append('build runtime: phony ' + ' '.join(ninja_path(o) for o in rt_objs))
@@ -222,15 +242,26 @@ def main():
         write_if_changed(out / 'modules.c', module_glue(layout, list(mods), exefs_hashes(title, version), paths))
     cpus = os.cpu_count() or 4
     jobs = args.jobs or max(1, min(cpus, int((free_ram() - 2 * 2**30) // JOB_MEM)))
-    cc = tool('clang')
-    write_if_changed(out / 'build.ninja', ninja_file(gen, out, mods, jobs, cc, args.runtime_only))
+    cc, cxx = tool('clang'), tool('clang++')
+    stale = stale_shaders(RUNTIME)
+    if stale:
+        sys.exit(f'{stale[0]}: its SPIR-V header no longer matches; run python tools/build_shaders.py')
+    write_if_changed(out / 'build.ninja', ninja_file(gen, out, mods, jobs, cc, cxx, args.runtime_only))
     cmd = [tool('ninja'), '-C', str(out), '-j', str(max(jobs, cpus))]
     if args.keep_going:
         cmd += ['-k', '0']
     if args.target:
         cmd.append(args.target)
     print(f'build: {gen.name} -> {out} ({jobs} generated-code jobs, {cc})', flush=True)
-    sys.exit(subprocess.call(cmd))
+    rc = subprocess.call(cmd)
+    if rc == 0 and not args.runtime_only:
+        for dll in RUNTIME_DLLS:   # loaded from the exe's folder; copied when missing or changed
+            dst = out / dll.name
+            if not dll.is_file():
+                sys.exit(f'{dll} not found: install the MSYS2 CLANG64 packages (docs/building.md)')
+            if not dst.is_file() or dst.stat().st_size != dll.stat().st_size or dst.stat().st_mtime < dll.stat().st_mtime:
+                shutil.copy2(dll, dst)
+    sys.exit(rc)
 
 
 if __name__ == '__main__':

@@ -5,7 +5,9 @@
 //     --selftest        layout, dispatch table and host-function registry; needs no game files
 //     --probe-loader    load and relocate the modules
 //     --boot            run the game until the first NVN call
-//     --frames N        run the game until its Nth present (null renderer: presents are logged)
+//     --frames N        run the game until its Nth present
+//     --null-gfx        no GPU: the null graphics back end, presents are logged
+//     --shot PATH       with --frames N: the Nth present's picture as a PNG
 //     (no mode)         run the game
 //
 // Also here: the runtime services the generated code calls besides rt_dispatch and rt_svc (rt_brk, rt_udf,
@@ -545,7 +547,7 @@ static int selftest(void) {
 
 static int usage(const char *argv0) {
     fprintf(stderr, "usage: %s [--exefs DIR] [--romfs DIR] [--profile DIR] "
-                    "[--selftest | --probe-loader | --boot | --frames N]\n", argv0);
+                    "[--null-gfx] [--shot PATH] [--selftest | --probe-loader | --boot | --frames N]\n", argv0);
     return 2;
 }
 
@@ -556,6 +558,7 @@ int main(int argc, char **argv) {
     setvbuf(stderr, NULL, _IONBF, 0);
     plat_crash_hook(crash_handler);
     parse_trace();
+    prof_start();
     // Timed guest waits (kernel.c block_inner) sleep in whole milliseconds; at the default 15.6 ms tick a 1 ms wait
     // costs a full tick. PLUCKOMP_TIMER_1MS=0 keeps the default for comparison.
     if (cfg_bool("PLUCKOMP_TIMER_1MS")) plat_timer_1ms();
@@ -568,6 +571,11 @@ int main(int argc, char **argv) {
         if (path) {
             if (++i == argc) return usage(argv[0]);
             *path = argv[i];
+        } else if (!strcmp(argv[i], "--null-gfx")) {
+            cfg.null_gfx = 1;
+        } else if (!strcmp(argv[i], "--shot")) {
+            if (++i == argc) return usage(argv[0]);
+            cfg.shot = argv[i];
         } else if (!mode && !strcmp(argv[i], "--frames")) {
             char *end;
             if (++i == argc) return usage(argv[0]);

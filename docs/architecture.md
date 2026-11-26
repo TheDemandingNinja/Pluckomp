@@ -60,15 +60,34 @@ over in design. The game-specific half (patches, version tables, renderer quirks
 - NVN front end from TotK Recomp (`nvn_api_core.c`, `nvn_api_obj.c`, `nvn_api_cmd.c`, `nvn_ext.c`, `nvn_procs.c`):
   `nvnBootstrapLoader` and `nvnDeviceGetProcAddress` hand out synthetic host addresses for every proc; objects live in
   the game's own NVN object memory; command buffers record into host op streams that a back end replays at submit.
-- Back ends implement `GfxBackend` (`gfx.h`). Today only the null one (`gfx_null.c`): no GPU, every submit completes
-  at once with its CPU-visible side effects (event signals, counter reports, buffer copies and fills, uniform updates,
-  fence syncs), and each present is logged with its frame number, size and format.
+- Back ends implement `GfxBackend` (`gfx.h`); `gfx_backend()` picks Vulkan, or the null one with `--null-gfx`.
+- Null back end (`gfx_null.c`): no GPU, every submit completes at once with its CPU-visible side effects (event
+  signals, counter reports, buffer copies and fills, uniform updates, fence syncs), and each present is logged with its
+  frame number, size and format.
+- Vulkan back end, TotK Recomp's without its TotK-only parts (`vk_*.c`; Vulkan 1.3, VMA for memory):
+  - Memory (`vk_memory.c`): CPU-visible pools are guest memory imported as Vulkan buffers
+    (`VK_EXT_external_memory_host`); on a discrete GPU pools used as buffers get a device-local mirror kept in sync
+    from the write watch; physical pools are device memory, virtual pools a page table over them.
+  - Textures (`vk_texture.c`): images keyed by storage address and descriptor, uploaded on first use and again when
+    their pages were written; block-linear storage is deswizzled by a compute shader (`shaders/bl_deswizzle.comp`), ASTC
+    decoded by another (`shaders/astc_decode.comp`) where the GPU does not sample it. GPU-written targets go back to
+    their storage when the CPU reads it or waits for their fence.
+  - Replay (`vk_exec.c`, `vk_exec_draw.c`, `vk_exec_xfer.c`): each submission's op streams are recorded into Vulkan
+    command buffers with dynamic rendering; draws resolve their shaders through the translator and their pipelines
+    through `vk_pipeline.c` (graphics pipeline libraries where the driver fast-links them; pipelines of earlier runs are
+    rebuilt at boot from `pipeline-keys.bin`). Uniform ranges are snapshotted at submit (`vk_usnap.c`). A program is
+    bound per stage (`vk_exec_draw.c` bind_program): Pikmin 4's UE4 binds its vertex and fragment programs apart.
+  - Submission and fences (`vk_sync.c`): one timeline semaphore; its values are the NVN fence values. The recorder
+    thread of TotK Recomp is not ported: `vk_rec.h` makes every Vulkan call on the replaying thread.
+  - Window and present (`gfx_window_sdl.c`, `gfx_present.c`): an SDL3 window on its own thread, a swapchain the game's
+    window texture is blitted into (letterboxed), presented at the pacer's time by a present thread (`vk_backend.c`).
+- Shader cache (`gfx_shader.c`): the translator runs as child processes on first use of each (program, answers) pair;
+  SPIR-V and reflection are kept under `shader-cache/` next to the executable, keyed by `pluckomp_xlate.id`.
 - Shaders: Ryujinx 1.3.2's translator (`tools/vendor/ryujinx`, unmodified) with TotK Recomp's generic patches
   (`tools/xlate/patches/`; its shadow-filter and motion-vector patches are left out), built with .NET NativeAOT as
   `pluckomp_xlate.exe` and run as a separate process that answers one job per line (`tools/xlate/Program.cs`). It
   writes SPIR-V for Vulkan and a `res.json` with the bindings. `pluckomp_xlate.id` hashes its inputs to key a shader
   cache.
-- Next: a Vulkan back end that runs the translator on first use of each shader and caches the result.
 
 ### 5. Installer (`installer/`)
 

@@ -712,5 +712,5 @@ NVN_API(nvnQueuePresentTexture) {
     gfx_backend()->present(t, o->crop, slot, o->presents);
     o->ticket[idx] = o->presents;
     o->avail[idx] = slot + period;
-    rt_frame_presented(o->presents);
+    rt_frame_presented(t, o->presents);
 }

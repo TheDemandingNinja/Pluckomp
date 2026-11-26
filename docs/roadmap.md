@@ -42,13 +42,19 @@ patches, frame-ahead sync).
 
 - [x] Shader translator: Ryujinx 1.3.2's Maxwell-to-SPIR-V translator with TotK Recomp's generic patches, built with
   .NET NativeAOT (`tools/build_xlate.py`, smoke test `tests/xlate_smoke.py`)
-- [ ] Window and swapchain (SDL3), present of the game's window texture
-- [ ] Vulkan device, memory pools, textures (block-linear deswizzle, ASTC), samplers, sync and fences
-- [ ] Replay of the recorded NVN command streams: transfers, clears, draws and dispatches, pipelines and the shader
-  cache (`runtime/gfx_shader.c`)
-- [ ] `--frames N` with the Vulkan back end and frame captures; the title screen drawn
+- [x] Window and swapchain (SDL3), present of the game's window texture
+- [x] Vulkan device, memory pools, textures (block-linear deswizzle, ASTC), samplers, sync and fences
+- [x] Replay of the recorded NVN command streams: transfers, clears, draws and dispatches, pipelines and the shader
+  cache (`runtime/gfx_shader.c`); programs bound per stage, as UE4 binds them
+- [x] `--frames N` with the Vulkan back end (600 pass, every draw recorded, no shader failures), `--null-gfx`, and
+  `--shot PATH`
+- [x] One connected controller without input (`runtime/ov_hid.c`), so the controller applet returns at once
+- [ ] The title screen drawn: after its startup logo the game stays on a black frame and loads nothing more after
+  frame 48, on the null back end too, so the wait is on the game's side. Without a controller it went on to open its
+  movie decoders (frame 55), which answer unsupported; with one it does not reach them
+- [ ] Vulkan validation layer runs; the recorder thread (`vk_rec.c`)
 
 ## Milestone 5 - Playable
 
-- Input (the game waits at the controller applet until a controller is connected), audio output, saves; first tester
+- Input into the connected controller, audio output, saves; first tester
   build through the installer

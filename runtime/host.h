@@ -30,6 +30,51 @@ enum { RT_TRACE_SVC = 1, RT_TRACE_HOSTCALL = 2, RT_TRACE_IPC = 4, RT_TRACE_FS = 
        RT_TRACE_PLUGIN = 1024 };     // no name either: the plugin service run (plugin_init.c) sees every SVC through
                                      // rt_plugin_svc while it runs a plugin's init
 extern unsigned rt_trace;                       // from PLUCKOMP_TRACE=svc,host,ipc,fs,gfx,perf,sched,audio,present (or all)
+// perf.c: PLUCKOMP_TRACE=perf frame timing (waits of the render thread) and the frame-time summary.
+// PERF_TEX: texture uploads on the render thread (deswizzle, decode, staging), PERF_ASTC included
+enum { PERF_PACE, PERF_FENCE, PERF_DRAIN, PERF_PIPE, PERF_XLATE, PERF_TEX, PERF_ASTC, PERF_N };
+void prof_start(void);                          // main.c, once
+void prof_write(void);                          // idempotent; boot.c calls it before _exit
+uint64_t perf_begin(void);                      // start time of a wait; pair with perf_end
+void perf_end(int kind, uint64_t t0);           // counts render-thread time only
+void perf_replay(uint64_t t0);                  // replay (NVN -> Vulkan recording) time on any thread, waits inside it included
+void perf_replay_thread(void);                  // the calling thread replays for the render thread: perf_end counts its waits
+// The calling thread is one every frame goes through: on a hybrid CPU it prefers the P-cores; the first thread of each
+// role logs it.
+enum { PCORE_MAIN, PCORE_RENDER, PCORE_REPLAY, PCORE_RECORDER, PCORE_PRESENT, PCORE_N };
+void perf_core_thread(int role);
+// Events per 60-frame window: graphics pipelines finished by the background workers, draws skipped while pending,
+// first texture uploads and re-uploads after CPU writes, draws skipped while a shader translates in the background,
+// draws that waited for their pending pipeline and got it, draws into a target the previous frame did not render that
+// waited for their pending shader or pipeline instead of being skipped (vk_exec_draw.c prepare_draw); graphics
+// pipelines created on any thread, texture images created, images created at an address where a live image of another
+// descriptor already starts, write-backs done and skipped because the CPU rewrote the storage after the GPU render
+// (vk_texture.c vk_texture_write_back).
+enum { PERF_CNT_PIPE_ASYNC, PERF_CNT_PIPE_SKIP, PERF_CNT_TEX_UP, PERF_CNT_TEX_REUP, PERF_CNT_SHADER_SKIP,
+       PERF_CNT_PIPE_WAIT, PERF_CNT_ONESHOT_WAIT, PERF_CNT_PIPE_BUILT, PERF_CNT_TEX_NEW, PERF_CNT_TEX_ALIAS,
+       PERF_CNT_WB, PERF_CNT_WB_SKIP, PERF_CNT_N };
+void perf_count(int kind);
+void perf_present(uint64_t frame);
+void perf_summary_flush(void);                  // prints the frame-time summary of the running period (exit)
+void gfx_exit_log(void);                        // back end's lines for the exit summary (weak no-op in perf.c)
+void perf_gpu_wait(uint64_t t0);                // a wait for a GPU fence ended (any thread)
+// GPU side of the 60-frame perf line, filled by the graphics back end when it set perf_gpu_stats. gpu_ns: GPU busy time
+// since the previous call (timestamp queries, overlaps counted once), have_gpu 0 when the device has no timestamps.
+typedef struct {
+    int have_gpu, have_vram, vram_exact;
+    uint64_t gpu_ns, gpu_parts, gpu_missed;     // busy time, submission parts timed, parts left untimed
+    uint64_t vram_used, vram_budget;
+    int have_idle;                              // calibrated timestamps: the idle split below is filled
+    uint64_t idle_ns, starved_ns, queued_ns;    // GPU idle between timed parts; of it, before the part was submitted; submit to start
+    uint64_t idle_gaps, max_gap_ns;             // gaps over 0.5 ms; the longest
+} PerfGpu;
+extern void (*perf_gpu_stats)(PerfGpu *out);
+int perf_gpu_timing(void);                      // GPU timestamps wanted: PLUCKOMP_TRACE=perf
+void perf_gpu_busy(uint64_t ns);                // GPU busy time of a timed submission part (vk_sync.c, any thread)
+// cfg.c: PLUCKOMP_<name> (def when unset) as a switch: 0 for "0", 1 for anything else. RT_KNOB_ON(mode) tests it (TotK
+// Recomp's A/B blocks, which made 2 mean "on in the B blocks", are not ported).
+int rt_knob(const char *name, const char *def);
+#define RT_KNOB_ON(mode) (mode)
 #define RT_RESULT(module, desc) ((uint32_t)(module) | ((uint32_t)(desc) << 9))
 void rt_sha256(const void *p, size_t n, uint8_t out[32]);   // BCrypt; fatal if the provider fails
 
@@ -242,6 +287,8 @@ typedef struct {
     const char *exefs, *romfs, *profile;                   // ExeFS directory, extracted RomFS, save profile
     int boot;                                              // --boot: exit 0 at the first NVN call
     uint64_t frames;                                       // --frames N: exit 0 at the Nth present (0 = no limit)
+    int null_gfx;                                          // --null-gfx: the null graphics back end (gfx_null.c)
+    const char *shot;                                      // --shot PATH: the last present of --frames N as a PNG
 } RtConfig;
 const RtConfig *rt_config(void);
 void rt_boot_event(const char *what, Cpu *c, const char *detail);   // checkpoint log; "nvn" ends --boot
