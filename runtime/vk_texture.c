@@ -1681,6 +1681,12 @@ const VkTexImage *vk_texture_by_id(int id, view_t *view, int *has_view) {
     return r;
 }
 
+int vk_texture_slot_desc_locked(int id, tex_t *out) {
+    if (id < 0 || id >= ntslots || !tslots[id].used) return 0;
+    *out = tslots[id].t;
+    return 1;
+}
+
 const VkTexImage *vk_texture_by_id_locked(int id, view_t *view, int *has_view) {
     if (id < 0 || id >= ntslots || !tslots[id].used) return NULL;
     TexSlot *s = &tslots[id];

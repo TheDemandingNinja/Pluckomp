@@ -117,16 +117,21 @@ once the game calls them.
 | `nn::vi`, `nv` | 8 (`ov_services.c`) | display and layer identities, 60 Hz vsync event, graphics allocators recorded | none |
 | `nn::prepo`, `nn::err`, `nn::ec`, `nn::ro`, `nn::pctl`, `nn::diag`, `nn::nfp`, `nn::pl` | (`ov_system.c`, `ov_services.c`) | dropped reports, no shop, no NFC reader, no shared font | `nn::ngc::ProfanityFilter` (system data; not reached in 600 frames) |
 | `nn::audio`, `nn::codec` | none: served as `audren:u`, `audout:u`, `hwopus` | silent | none |
-| `movie::Decoder` | 1 (`ov_movie.c`) | `Configure` answers unsupported (0x2001), so the library never opens NVDEC through NvRm | none |
+| `movie::Decoder` | 21 (`ov_movie.c`) | VP9 decoders (type 3) on the host with libvpx: frames written into the game's NVN texture (mode 2) or NV12 buffers (mode 1); other types run the library's code | none |
 | `nn::swkbd`, `nn::web`, `nn::album` | none | | applets, not reached |
 | NVN, `nvgr_*` | `nvnBootstrapLoader` and every proc (`nvn_procs.c`, `nvn_api_*.c`, `nvn_ext.c`) | null back end: no GPU, presents logged | none |
 
-The movie decoder needs a word: once, on a run before `ov_movie.c` existed, a movie decoder started (Android's ACodec
-in subsdk0) about 60 frames in and aborted in `NvOsDrvOpen`, as TotK Recomp found for its movies. Since the boot
-reaches its title (about frame 55) every run builds two decoders for the title's background movie, VP9 (type 3, output
-format 3, mode 2) and its audio track (type 5, format 1, mode 1), and both get the unsupported answer. The game stays in
-its title state with a black picture; a host VP9 decoder (TotK Recomp's libvpx one serves type 3 in buffer mode 1 only)
-is the next step.
+The movie decoder needs a word. The SDK movie library in subsdk0 is Android's MediaCodec over NvMM; its VP9 decoder
+opens NVDEC through NvRm and aborts in `NvOsDrvOpen`, as TotK Recomp found for its movies. At its title (about frame 55)
+the game builds two decoders for `MOV_Title_Outdoor.webm`, whose demuxer is UE4's WebMMedia plugin in `main`: VP9
+(type 3, output format 3, mode 2) and the audio track (type 5, output format 1, mode 1). subsdk0's
+`DecoderImpl::IsOutputFormatSupported` takes format 3 only in mode 2, the texture mode: the game passes its own
+`NVNtexture` (1920x1080 RGBA8_SRGB) as the `Buffer`'s base with its `NVNdevice` and an `NVNsync` (`Buffer::SetNvnDev`,
+`SetNvnSync`), and `CopyOutputBufferToClientTextureAndRelease` blits the frame there on the GPU and releases the
+output index. `ov_movie.c` decodes with libvpx on a worker thread, converts each frame to RGBA (BT.709, limited range),
+writes it into that texture with the back end's `WriteTexels` and fences the sync at the newest submit; TotK Recomp's
+buffer mode (format 4, NV12) is kept. The audio decoder runs the library's own code: its `Configure` succeeds and no
+service is reached in 600 frames.
 
 The nifm hold needs one too. Pikmin 4's BCAT pre-sync runnable (constructed at main+0x206a6d0) stores its status 1
 after `FRunnableThread::Create` returns, while the thread's `Run` (main+0x206a830) submits a network request, polls

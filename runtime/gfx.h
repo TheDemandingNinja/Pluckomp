@@ -83,9 +83,16 @@ typedef struct {
     uint16_t handle;            // TEX/IMG: raw handle (word offset; separate: texture | sampler << 14); SSBO: address offset
     uint16_t count;             // descriptors (array length)
     uint8_t separate;           // TEX: texture and sampler handles are separate
+    uint8_t samp_kind;          // TEX: how the handle is made (GFX_SAMP_*)
+    int16_t c2[2];              // GFX_SAMP_PAIR / GFX_SAMP_ID: c2 byte offsets of the two words (-1: outside the
+                                // handle ranges); GFX_SAMP_ID: c2[1] is the sampler id itself
 } GfxShaderRes;
+// A texture handle the translator packed from two c2 words (Ryujinx TextureHandle: SeparateSamplerHandle,
+// SeparateSamplerId, SeparateConstantSamplerHandle): the shader samples the OR of a separate texture handle and a
+// separate sampler handle, as Ryujinx TextureHandle.ReadPackedId reads them. GFX_SAMP_HANDLE: the one word at slot.
+enum { GFX_SAMP_HANDLE, GFX_SAMP_PAIR, GFX_SAMP_ID_SHIFT, GFX_SAMP_ID };
 typedef struct { uint8_t type, comps, packed; } GfxShaderIo;   // GFX_TYPE_*, components, 1 with a Component decoration
-int gfx_shader_stage(const GfxShader *s);                   // GFX_STAGE_VS, GFX_STAGE_FS or GFX_STAGE_CS
+int gfx_shader_stage(const GfxShader *s);                   // GFX_STAGE_VS, GFX_STAGE_GS, GFX_STAGE_FS or GFX_STAGE_CS
 int gfx_shader_resources(const GfxShader *s, int kind, const GfxShaderRes **res);   // count of GFX_RES_* kind; array in *res
 uint32_t gfx_shader_slot_mask(const GfxShader *s);                    // texture/image slots whose type its translation read
 uint32_t gfx_shader_inputs(const GfxShader *s, GfxShaderIo io[32]);    // Input Locations (VS attributes, FS varyings) as a mask
@@ -130,6 +137,9 @@ typedef struct { uint64_t frames, nvn_calls, nvn_distinct, unimplemented, valida
 GfxStats gfx_stats(void);
 // boot.c: --frames N ends the run after the Nth present of t (--shot saves it first through read_texels)
 void rt_frame_presented(const tex_t *t, uint64_t n);
+// ov_movie.c: at every present, on the presenting guest thread: hands due movie frames over and signals the events the
+// movie decoders owe
+void movie_tick(Cpu *c);
 void gfx_present_shot(const char *path);                   // gfx_present.c: the next present's window image as a PNG
 void rt_write_png(const char *path, const uint8_t *rgba, uint32_t w, uint32_t h);   // boot.c; fatal on a write error
 int gfx_replay_async(void);                                // vk_backend.c: PLUCKOMP_REPLAY_ASYNC in effect

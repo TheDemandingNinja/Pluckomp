@@ -544,7 +544,8 @@ static int reflection_valid(const char *res, uint64_t size) {
     const char *st = strstr(b, "\"stage\"");
     if (!st) return 0;
     st = strchr(st + 7, '"');
-    return st && (!strncmp(st, "\"vs\"", 4) || !strncmp(st, "\"ps\"", 4) || !strncmp(st, "\"cs\"", 4));
+    return st && (!strncmp(st, "\"vs\"", 4) || !strncmp(st, "\"ps\"", 4) || !strncmp(st, "\"cs\"", 4) ||
+                  !strncmp(st, "\"gs\"", 4));
 }
 
 // Every instruction after the header has a word count and the last one ends at the module's end: a module with
@@ -688,13 +689,37 @@ static int fmt_code(const char *name) {
 }
 
 // c2 slot of a texture or image handle (Service.cs of MNG's pluckomp_xlate: combined handles at 0x20, 32 slots; images at
-// 0x120; separate textures at 0x168), -1 outside those ranges or for a handle in another constant buffer.
+// 0x120; separate textures at 0x168, separate samplers at 0x568), -1 outside those ranges or for a handle in another
+// constant buffer. cbuf_slot is the translator's packed pair (Ryujinx TextureHandle.PackSlots): the texture's buffer in
+// the low 16 bits, the sampler's plus one in the high 16 (0: the texture's).
+enum { C2_COMBINED = 0x20, C2_IMAGES = 0x120, C2_SEP_TEX = 0x168, C2_SEP_SAMP = 0x568, C2_SEP_SAMP_END = 0x968 };
 static int handle_slot(int kind, int cbuf_slot, int handle, int separate) {
-    if (cbuf_slot >= 0 && cbuf_slot != 2) return -1;
+    if (cbuf_slot >= 0 && (cbuf_slot & 0xffff) != 2) return -1;
     int bytes = (handle & 0x3fff) * 4;
-    if (kind == GFX_RES_IMG) return bytes >= 0x120 && bytes < 0x168 ? (bytes - 0x120) / 8 : -1;
-    if (separate) return bytes >= 0x168 && bytes < 0x568 ? (bytes - 0x168) / 8 : -1;
-    return bytes >= 0x20 && bytes < 0x120 ? (bytes - 0x20) / 8 : -1;
+    if (kind == GFX_RES_IMG) return bytes >= C2_IMAGES && bytes < C2_SEP_TEX ? (bytes - C2_IMAGES) / 8 : -1;
+    if (separate) return bytes >= C2_SEP_TEX && bytes < C2_SEP_SAMP ? (bytes - C2_SEP_TEX) / 8 : -1;
+    return bytes >= C2_COMBINED && bytes < C2_IMAGES ? (bytes - C2_COMBINED) / 8 : -1;
+}
+
+// The words of a texture handle the translator packed from two c2 words (Ryujinx TextureHandle.PackOffsets: first word
+// offset in bits 0-13, second in bits 14-27, TextureHandleType in bits 28-31). Type 1 (SeparateSamplerHandle) ORs the
+// two words; 2 (SeparateSamplerId) shifts the second left by 20 first; 3 (SeparateConstantSamplerHandle) takes the
+// second offset as the sampler id. The two words are told apart by where they lie, not by their order: Pikmin 4's UE4
+// shaders pack some buffer textures with the sampler word first. r->slot names the separate texture slot of either.
+static void packed_handle(GfxShaderRes *r, int cbuf_slot, int handle) {
+    unsigned type = (uint32_t)handle >> 28;
+    int off[2] = {(handle & 0x3fff) * 4, (int)((uint32_t)handle >> 14 & 0x3fff) * 4};
+    int buf[2] = {cbuf_slot & 0xffff, cbuf_slot >= 0 && (uint32_t)cbuf_slot >> 16 ? (int)((uint32_t)cbuf_slot >> 16) - 1
+                                                                                     : cbuf_slot & 0xffff};
+    r->samp_kind = type == 3 ? GFX_SAMP_ID : type == 2 ? GFX_SAMP_ID_SHIFT : GFX_SAMP_PAIR;
+    for (int i = 0; i < 2; i++) {
+        int in_c2 = cbuf_slot < 0 || buf[i] == 2;
+        r->c2[i] = (int16_t)(in_c2 && off[i] >= C2_COMBINED && off[i] < C2_SEP_SAMP_END ? off[i] : -1);
+    }
+    if (type == 3) r->c2[1] = (int16_t)(off[1] / 4);
+    r->slot = -1;
+    for (int i = 0; i < 2 && r->slot < 0; i++)
+        if (r->c2[i] >= C2_SEP_TEX && r->c2[i] < C2_SEP_SAMP && !(type == 3 && i == 1)) r->slot = (int16_t)((r->c2[i] - C2_SEP_TEX) / 8);
 }
 
 static void add_res(GfxShader *s, int kind, const char *o, const char *e) {
@@ -717,12 +742,16 @@ static void add_res(GfxShader *s, int kind, const char *o, const char *e) {
     r->type = (uint16_t)json_int(o, e, "type", 0);
     r->format = (uint8_t)fmt_code(buf);
     r->flags = (uint8_t)json_int(o, e, "flags", 0);
-    r->cbuf_slot = (int8_t)json_int(o, e, "cbuf_slot", -1);
+    int cbuf_slot = (int)json_int(o, e, "cbuf_slot", -1);
+    r->cbuf_slot = (int8_t)(cbuf_slot < 0 ? -1 : cbuf_slot & 0xffff);
     int handle = (int)json_int(o, e, "handle", 0);
     r->handle = (uint16_t)handle;
     r->count = (uint16_t)json_int(o, e, "array", 1);
     r->separate = sep && *sep == 't';
-    r->slot = (int16_t)handle_slot(kind, r->cbuf_slot, handle, r->separate);
+    r->slot = (int16_t)handle_slot(kind, cbuf_slot, handle, r->separate);
+    r->samp_kind = GFX_SAMP_HANDLE, r->c2[0] = r->c2[1] = -1;
+    if (kind == GFX_RES_TEX && !r->separate && (uint32_t)handle >> 28 && (uint32_t)handle >> 28 <= 3)
+        packed_handle(r, cbuf_slot, handle);
 }
 
 // SPIR-V opcodes and enumerants used below (SPIR-V 1.6 specification, section 3).
@@ -845,7 +874,8 @@ static void reflect(GfxShader *s) {
     const char *js = s->reflection;
     char stage[8];
     json_str(js, js + strlen(js), "stage", stage, sizeof stage);
-    s->stage = !strcmp(stage, "cs") ? GFX_STAGE_CS : !strcmp(stage, "ps") ? GFX_STAGE_FS : GFX_STAGE_VS;
+    s->stage = !strcmp(stage, "cs") ? GFX_STAGE_CS : !strcmp(stage, "ps") ? GFX_STAGE_FS
+             : !strcmp(stage, "gs") ? GFX_STAGE_GS : GFX_STAGE_VS;
     for (int k = 0; k < GFX_RES_KINDS; k++) {
         int count = json_objects(js, kinds[k], NULL, s, k);
         s->res[k] = calloc(count ? count : 1, sizeof *s->res[k]);
@@ -1166,7 +1196,7 @@ static size_t build_request(char *o0, const char *hex, const char *stage, const 
        ae8f4f4). Without it a shader that stores to memory is depth-tested late, and the G-buffer draws' EQUAL test
        after the depth prepass fails along contour lines. Already part of the code hash (the whole control section). */
     if (!strcmp(stage, "ps") && (control[0x718] & 1)) o += sprintf(o, ",\"early_fragment_tests\":true");
-    int si = !strcmp(stage, "vs") ? 0 : !strcmp(stage, "cs") ? 2 : 1;   // gfx_shader_set_host answers
+    int si = !strcmp(stage, "vs") || !strcmp(stage, "gs") ? 0 : !strcmp(stage, "cs") ? 2 : 1;   // gfx_shader_set_host answers
     if (!host_f64) o += sprintf(o, ",\"softfloat64\":true");
     if (host_sbuf) o += sprintf(o, ",\"sbuf_align\":%u", host_sbuf);
     if (host_sg[si] != 32) o += sprintf(o, ",\"subgroup\":%u", host_sg[si]);
@@ -1236,7 +1266,8 @@ typedef struct {
 
 static int req_init(Req *r, int stage, const uint8_t *control, const uint8_t *code, uint64_t code_size, const uint8_t *c1,
                     const GfxShaderAnswers *a) {
-    r->stage_name = stage == GFX_STAGE_VS ? "vs" : stage == GFX_STAGE_FS ? "ps" : stage == GFX_STAGE_CS ? "cs" : NULL;
+    r->stage_name = stage == GFX_STAGE_VS ? "vs" : stage == GFX_STAGE_FS ? "ps" : stage == GFX_STAGE_CS ? "cs"
+                  : stage == GFX_STAGE_GS ? "gs" : NULL;
     if (!r->stage_name) return fail("stage is not translated", NULL), 0;
     uint32_t c1_off;
     memcpy(&c1_off, control + 0x700, 4), memcpy(&r->length, control + 0x704, 4);

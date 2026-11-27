@@ -77,6 +77,9 @@ over in design. The game-specific half (patches, version tables, renderer quirks
     through `vk_pipeline.c` (graphics pipeline libraries where the driver fast-links them; pipelines of earlier runs are
     rebuilt at boot from `pipeline-keys.bin`). Uniform ranges are snapshotted at submit (`vk_usnap.c`). A program is
     bound per stage (`vk_exec_draw.c` bind_program): Pikmin 4's UE4 binds its vertex and fragment programs apart.
+    What UE4 uses beyond TotK: texture handles the translator packs from a separate texture and a separate sampler
+    (`vk_exec_draw.c` sep_handle), buffer textures read through texel buffer views (texel_view), and a geometry stage
+    (its volume colour-grading LUT), built as a full pipeline without the pipeline-library path.
   - Submission and fences (`vk_sync.c`): one timeline semaphore; its values are the NVN fence values. The recorder
     thread of TotK Recomp is not ported: `vk_rec.h` makes every Vulkan call on the replaying thread.
   - Window and present (`gfx_window_sdl.c`, `gfx_present.c`): an SDL3 window on its own thread, a swapchain the game's

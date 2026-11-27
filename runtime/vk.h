@@ -360,6 +360,9 @@ const VkTexImage *vk_texture_by_id(int id, view_t *view, int *has_view);
 void vk_texture_lock(void);
 void vk_texture_unlock(void);
 const VkTexImage *vk_texture_by_id_locked(int id, view_t *view, int *has_view);
+// The descriptor registered at slot id (texture lock held); 0 when the slot is empty. Buffer textures have no image:
+// the replay reads their storage through a texel buffer view (vk_exec_draw.c texel_view).
+int vk_texture_slot_desc_locked(int id, tex_t *out);
 // 1 when slot id's entry had its freshness check in this submission, so vk_texture_by_id_locked would only look it up.
 // No lock: a context of a chunked replay asks before taking the texture lock.
 int vk_texture_slot_checked(int id);
@@ -457,6 +460,7 @@ void vk_backend_shutdown(void);            // presents, vk_sync_shutdown, vk_mem
 // vk_pipeline_set_dynamic only and left out of the pipeline key.
 typedef struct VkPipeState {
     const GfxShader *vs, *fs;              // gfx_shader_get results; fs NULL: no fragment stage (depth only)
+    const GfxShader *gs;                   // geometry stage, NULL without one (Pikmin 4's UE4 draws its volume LUT through one)
     int32_t color_fmt[8];                  // NVNformat of colour target i (OP_SET_RT), 0 none
     int32_t depth_fmt;                     // NVNformat of the depth/stencil target, 0 none
     uint8_t samples;                       // sample count of the targets; 0 or 1 single-sampled

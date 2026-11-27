@@ -28,6 +28,8 @@
 #include "host.h"
 #include "nvn_api.h"
 #include "nvn_hmap.h"
+#include "nvn_tex.h"
+#include "tex.h"
 #include "vk.h"
 #include "vk_exec.h"
 #include "platform/platform.h"
@@ -42,10 +44,12 @@
 #define SUP_IN 3              // support_in: viewport size, point size
 #define NVN_STAGE_VS 0
 #define NVN_STAGE_FS 1
+#define NVN_STAGE_GS 2
 #define NVN_STAGE_CS 5
 #define ONESHOT_WAIT_MS 30000u   // prepare_draw: how long a one-shot draw waits for its pipeline before it is skipped
 
-enum { W_PROGRAM, W_SHADER, W_PIPELINE, W_NO_VS, W_INDEX, W_UB, W_BIND, W_SSBO_ALIGN, W_SSBO_SLOT, W_RESTART, W_INDIRECT, W_COUNT };
+enum { W_PROGRAM, W_SHADER, W_PIPELINE, W_NO_VS, W_INDEX, W_UB, W_BIND, W_SSBO_ALIGN, W_SSBO_SLOT, W_RESTART, W_INDIRECT,
+       W_TEXEL, W_COUNT };
 
 static void warn_once(int key, const char *fmt, ...) {
     static volatile int32_t seen[W_COUNT];
@@ -85,7 +89,12 @@ typedef struct {
     int nwritten, cwritten;
     uint64_t fence;                      // the value cb_done waits for
     uint64_t serial;                     // unique per CbRes, for the descriptor pool journal
+    struct TexelView *tviews;            // texel buffer views of buffer textures (texel_view), destroyed by cb_done
+    int ntviews, ctviews;
 } CbRes;
+// A texel buffer view the submission's descriptors use. The pool buffer it reads may be destroyed after the
+// submission, so a view lives as long as its submission, never in a table across submissions.
+typedef struct TexelView { VkBuffer buffer; VkDeviceSize offset, range; VkFormat format; VkBufferView view; } TexelView;
 static uint64_t cbres_serial;            // atomic
 
 // Descriptor pools and full-size transient chunks go back to these lists when their command buffer completes, instead
@@ -225,11 +234,11 @@ typedef struct {
     VkBuffer sup_buf;
     VkDeviceSize sup_off;
     int sup_valid;
-    uint8_t c0[3][VK_C0_BYTES];          // last c0 bank per stage (vertex, fragment, compute) and where it lives
-    VkBuffer c0_buf[3];
-    VkDeviceSize c0_off[3];
-    int c0_valid[3];
-    struct { p_bind_buf ssbo[16], ubo[16]; uint32_t dim[3], binst; } c0_in[3];   // what vk_c0_fill read for c0[k]
+    uint8_t c0[4][VK_C0_BYTES];          // last c0 bank per stage (vertex, fragment, compute, geometry) and where it lives
+    VkBuffer c0_buf[4];
+    VkDeviceSize c0_off[4];
+    int c0_valid[4];
+    struct { p_bind_buf ssbo[16], ubo[16]; uint32_t dim[3], binst; } c0_in[4];   // what vk_c0_fill read for c0[k]
     VkPipelineLayout ds_layout;          // graphics layout the sets below were last pushed or bound with
     VkDescriptorSet ds_bound[2];         // allocated set bound per set number (0: none or pushed since)
     VkDescriptorSet ds_last[2];          // last allocated and written set per set number, contents in DS
@@ -471,6 +480,7 @@ typedef struct VkExecDraw {
     uint32_t c0_dim[3], c0_binst;        // the dispatch size and base instance of the draw or dispatch being bound
     uint64_t bind_gen;                   // bumped by every bind op that writes ex->prog, ubo, ssbo, tex or img
     int twin_dispatch;                   // op_dispatch*: the resources being bound are a dispatch's
+    int gs_bound;                        // prepare_draw: the draw being prepared has a geometry stage
     uint64_t wait_frame, wait_left_ns;   // prepare_draw: full-screen pipeline waits left in this frame
     ShaderEnt shader_tab[SHADER_SETS][SHADER_WAYS];
     StageMemo stagem[STAGEM_N];
@@ -518,7 +528,8 @@ static void cb_done(void *arg) {   // completion thread
         plat_mutex_unlock(&spare_lock);
         if (!kept) vmaDestroyBuffer(c->vma, r->chunks[i].buf, r->chunks[i].alloc);
     }
-    free(r->written), free(r->pools), free(r->chunks), free(r);
+    for (int i = 0; i < r->ntviews; i++) vkDestroyBufferView(c->device, r->tviews[i].view, NULL);
+    free(r->written), free(r->pools), free(r->chunks), free(r->tviews), free(r);
 }
 
 // Also after the bound state was replaced (a chunk's start): bind_sig compares the bound slots again.
@@ -1101,6 +1112,7 @@ static void answers_for(VkExec *ex, int st, const uint8_t *ctl, uint32_t mask, G
     memset(a, 0, sizeof *a);
     if (st == NVN_STAGE_VS) vk_pipeline_answers(&ex->pipe, a, NULL);
     else if (st == NVN_STAGE_FS) vk_pipeline_answers(&ex->pipe, NULL, a);
+    else if (st == NVN_STAGE_GS) {}
     else
         for (int k = 0; k < 3; k++) {
             uint32_t l;
@@ -1165,7 +1177,8 @@ static const GfxShader *shader_for(VkExec *ex, int st, int *present, int *pendin
             return set[0].s;
         }
     }
-    int gs = st == NVN_STAGE_VS ? GFX_STAGE_VS : st == NVN_STAGE_FS ? GFX_STAGE_FS : GFX_STAGE_CS;
+    int gs = st == NVN_STAGE_VS ? GFX_STAGE_VS : st == NVN_STAGE_FS ? GFX_STAGE_FS : st == NVN_STAGE_GS ? GFX_STAGE_GS
+           : GFX_STAGE_CS;
     const GfxShader *s = await ? gfx_shader_await(gs, ctl, code, len, &a)
                        : pending && vk_pipeline_async_on() ? gfx_shader_get_async(gs, ctl, code, len, &a, pending)
                                                            : gfx_shader_get(gs, ctl, code, len, NULL, &a);
@@ -1184,7 +1197,8 @@ static const GfxShader *shader_for(VkExec *ex, int st, int *present, int *pendin
 // ---- descriptors
 
 static int nvn_stage_of(int gfx_stage) {
-    return gfx_stage == GFX_STAGE_VS ? NVN_STAGE_VS : gfx_stage == GFX_STAGE_FS ? NVN_STAGE_FS : NVN_STAGE_CS;
+    return gfx_stage == GFX_STAGE_VS ? NVN_STAGE_VS : gfx_stage == GFX_STAGE_FS ? NVN_STAGE_FS
+         : gfx_stage == GFX_STAGE_GS ? NVN_STAGE_GS : NVN_STAGE_CS;
 }
 
 static VkDescriptorBufferInfo zero_info(uint64_t max) {
@@ -1289,7 +1303,7 @@ static int c0_on(void) {   // PLUCKOMP_FIX_C0=0: c0 reads zeros instead of the d
 // c0 from replay scratch; a bank equal to the stage's previous one reuses its range, so it costs no copy.
 static VkDescriptorBufferInfo c0_info(VkExec *ex, int st) {
     VkExecDraw *D = ex->draw;
-    int k = st == NVN_STAGE_VS ? 0 : st == NVN_STAGE_FS ? 1 : 2;
+    int k = st == NVN_STAGE_VS ? 0 : st == NVN_STAGE_FS ? 1 : st == NVN_STAGE_GS ? 3 : 2;
     // vk_c0_fill reads the storage slots, and the uniform slots and dispatch size for compute or the base instance for
     // graphics: equal inputs give the same bank, so neither the fill nor the 2 KiB compare is needed.
     typeof(D->B.c0_in[0]) in;
@@ -1901,6 +1915,101 @@ static Twin *twin_update(VkExec *ex, const VkTexImage *img) {
     return t;
 }
 
+// A c2 word of stage st as the NVN driver lays the bound handles out there (gfx_shader.c handle_slot): combined
+// handles from 0x20 and separate textures from 0x168 share the texture slots; separate samplers from 0x568.
+static uint64_t c2_word(const VkExec *ex, int st, int off) {
+    if (off >= 0x568 && off < 0x968) return ex->samp[st][(off - 0x568) / 8];
+    if (off >= 0x168 && off < 0x568) return ex->tex[st][(off - 0x168) / 8];
+    if (off >= 0x20 && off < 0x120) return ex->tex[st][(off - 0x20) / 8];
+    return 0;
+}
+
+// The handle of a texture the translator packed from two c2 words (GfxShaderRes.samp_kind), as Ryujinx
+// TextureHandle.ReadPackedId makes it: texture id in bits 0-19, sampler id from bit 20.
+static uint64_t sep_handle(const VkExec *ex, int st, const GfxShaderRes *r) {
+    uint64_t a = c2_word(ex, st, r->c2[0]);
+    if (r->samp_kind == GFX_SAMP_ID) return a | (uint64_t)(uint16_t)r->c2[1] << 20;
+    uint64_t b = c2_word(ex, st, r->c2[1]);
+    return r->samp_kind == GFX_SAMP_ID_SHIFT ? a | b << 20 : a | b;
+}
+
+// A sampled buffer texture (NVN_TEXTURE_TARGET_BUFFER, a UNIFORM_TEXEL_BUFFER binding): a texel buffer view over the
+// span of guest memory the texture's storage names, made once per submission. Pikmin 4's UE4 vertex shaders read
+// per-instance and skinning data so. Z.zview (zeros) when the slot holds no buffer texture or the storage cannot be
+// viewed: a format without texel buffer support, storage that is not one backed span, or an offset the device's
+// minTexelBufferOffsetAlignment does not allow.
+static VkBufferView texel_view(VkExec *ex, int st, const GfxShaderRes *r, uint32_t k) {
+    uint64_t h;
+    if (r->samp_kind != GFX_SAMP_HANDLE) {
+        h = sep_handle(ex, st, r);
+    } else {
+        int slot = r->slot + (int)k;
+        h = slot >= 0 && slot < 128 ? ex->tex[st][slot] : 0;
+    }
+    if (!h) return Z.zview;
+    tex_t t;
+    vk_texture_lock();
+    int ok = vk_texture_slot_desc_locked((int)(h & 0xfffff), &t);
+    vk_texture_unlock();
+    if (!ok || t.d.target != NVN_TEXTURE_TARGET_BUFFER || !t.mem) return Z.zview;
+    TexVkFormat f;
+    int bw, bh, bpb = nvn_fmt_bpb(t.d.format, &bw, &bh);
+    if (!tex_vk_format(t.d.format, &f) || f.vk != f.ideal || bpb <= 0 || bw != 1 || bh != 1) {
+        warn_once(W_TEXEL, "buffer texture of format %#x has no texel buffer format: read as zeros", t.d.format);
+        return Z.zview;
+    }
+    VkCtx *c = vk_ctx();
+    static uint8_t fmt_ok[256];   // per VkFormat below 256: 0 unknown, 1 sampled texel buffer support, 2 none
+    if ((uint32_t)f.vk < 256 && !fmt_ok[f.vk]) {
+        VkFormatProperties fp;
+        vkGetPhysicalDeviceFormatProperties(c->phys, f.vk, &fp);
+        fmt_ok[f.vk] = fp.bufferFeatures & VK_FORMAT_FEATURE_UNIFORM_TEXEL_BUFFER_BIT ? 1 : 2;
+    }
+    if ((uint32_t)f.vk >= 256 || fmt_ok[f.vk] != 1) {
+        warn_once(W_TEXEL, "buffer texture format %#x (Vulkan %d) is not a texel buffer format here: read as zeros",
+                  t.d.format, (int)f.vk);
+        return Z.zview;
+    }
+    uint64_t n = t.d.width ? t.d.width : 1, most = c->props.limits.maxTexelBufferElements;
+    if (n > most) n = most;
+    uint64_t bytes = n * (uint64_t)bpb;
+    VkMemSpan sp;
+    if (!vk_mem_resolve((uint64_t)(uintptr_t)t.mem, bytes, &sp) || sp.avail < bytes) {
+        warn_once(W_TEXEL, "buffer texture storage %p (%llu bytes) is not one backed span: read as zeros",
+                  (void *)t.mem, (unsigned long long)bytes);
+        return Z.zview;
+    }
+    VkDeviceSize align = c->props.limits.minTexelBufferOffsetAlignment;
+    if (align > 1 && sp.offset % align) {
+        warn_once(W_TEXEL, "buffer texture storage at offset %llu is not aligned to %llu: read as zeros",
+                  (unsigned long long)sp.offset, (unsigned long long)align);
+        return Z.zview;
+    }
+    VK_MEM_USE(sp);
+    count_use(ex->draw, sp.cls, VK_MUSE_SSBO, bytes);
+    VK_MEM_BOUND(sp);
+    CbRes *cr = cb_res(ex);
+    for (int i = cr->ntviews - 1; i >= 0; i--) {
+        const TexelView *v = &cr->tviews[i];
+        if (v->buffer == sp.buffer && v->offset == sp.offset && v->range == bytes && v->format == f.vk) return v->view;
+    }
+    VkBufferViewCreateInfo ci = {.sType = VK_STRUCTURE_TYPE_BUFFER_VIEW_CREATE_INFO, .buffer = sp.buffer,
+                                 .format = f.vk, .offset = sp.offset, .range = bytes};
+    VkBufferView view;
+    if (vkCreateBufferView(c->device, &ci, NULL, &view) != VK_SUCCESS) {
+        warn_once(W_TEXEL, "a texel buffer view (format %d, %llu bytes) could not be created: read as zeros",
+                  (int)f.vk, (unsigned long long)bytes);
+        return Z.zview;
+    }
+    if (cr->ntviews == cr->ctviews) {
+        cr->ctviews = cr->ctviews ? cr->ctviews * 2 : 16;
+        cr->tviews = realloc(cr->tviews, sizeof *cr->tviews * (size_t)cr->ctviews);
+        if (!cr->tviews) rt_fatal("vk: out of memory");
+    }
+    cr->tviews[cr->ntviews++] = (TexelView){sp.buffer, sp.offset, bytes, f.vk, view};
+    return view;
+}
+
 // The image descriptor of slot h; in a dispatch, a compare-sampled colour image the driver cannot compare is swapped
 // for its depth twin.
 static void tex_info(VkExec *ex, const GfxShaderRes *r, uint64_t h, int storage, int separate, VkDescriptorImageInfo *out,
@@ -2366,7 +2475,7 @@ static void bi_gb(const VkExec *ex, uint64_t g[4]);
 static const BiTest *bi_plan(VkExec *ex, const VkPipeInfo *info, const uint64_t gt[4], const uint64_t gb[4], int *fl) {
     VkExecDraw *D = ex->draw;
     const BiLast *L = &D->BL;
-    if (!D->B.bi_valid || ex->chunked || L->info != info || D->BI.info != info) return NULL;
+    if (!D->B.bi_valid || ex->chunked || L->info != info || D->BI.info != info || D->gs_bound) return NULL;
     const RsList *l = rs_list(ex, info);
     if (!l->m.gfx || l->m.wr) return NULL;
     int f = BT_ALWAYS;
@@ -2492,10 +2601,11 @@ static void bind_resources(VkExec *ex, const VkPipeInfo *info, const uint64_t *b
             int img = b->kind == GFX_RES_IMG;
             if (b->type == VK_DESCRIPTOR_TYPE_UNIFORM_TEXEL_BUFFER || b->type == VK_DESCRIPTOR_TYPE_STORAGE_TEXEL_BUFFER) {
                 kind = 2;
-                for (uint32_t k = 0; k < cnt; k++) {   // buffer textures are not replayed yet
+                for (uint32_t k = 0; k < cnt; k++) {   // sampled buffer textures; storage ones are not replayed yet
                     o[k].w[0] = 0, o[k].w[1] = 0, o[k].w[2] = 0;
-                    o[k].view = Z.zview;
-                    if (need_w) bv[nd + k] = Z.zview;
+                    BI_CUR(k);
+                    o[k].view = b->type == VK_DESCRIPTOR_TYPE_UNIFORM_TEXEL_BUFFER ? texel_view(ex, st, r, k) : Z.zview;
+                    if (need_w) bv[nd + k] = o[k].view;
                 }
             } else {
                 kind = 1;
@@ -2505,6 +2615,7 @@ static void bind_resources(VkExec *ex, const VkPipeInfo *info, const uint64_t *b
                     uint64_t h = 0;
                     if (img) h = slot >= 0 && slot < 32 ? ex->img[st][slot] : 0;
                     else h = slot >= 0 && slot < 128 ? ex->tex[st][slot] : 0;
+                    if (!img && r->samp_kind != GFX_SAMP_HANDLE) h = sep_handle(ex, st, r);
                     BI_CUR(k);
                     tex_info(ex, r, h, img, r->separate, &o[k].image, &locked);
                     o[k].w[2] = (uint32_t)o[k].image.imageLayout;   // zero the tail padding
@@ -3185,6 +3296,16 @@ static int prepare_draw(VkExec *ex, int prim, int32_t count, int restart) {
         if (fs_wait) fs = shader_for(ex, NVN_STAGE_FS, &has_fs, NULL, 1);
     }
     if (!vs || (has_fs && !fs)) return 0;
+    // A geometry stage, where the program has one (looked up only then: TotK and most of Pikmin 4 have none). Its draws
+    // wait for its translation, as one-shot draws do: UE4 draws its volume LUT through one, once per change of grading.
+    const GfxShader *gsh = NULL;
+    if (ex->stage_prog[NVN_STAGE_GS]) {
+        int has_gs = 0, gs_wait = 0;
+        gsh = shader_for(ex, NVN_STAGE_GS, &has_gs, &gs_wait, 0);
+        if (gs_wait) gsh = shader_for(ex, NVN_STAGE_GS, &has_gs, NULL, 1);
+        if (has_gs && !gsh) return 0;
+    }
+    D->gs_bound = gsh != NULL;
     if (ex->pass_merged && merge_guard(ex, vs, fs)) {   // barrier_merge: the full barrier the merged Barrier skipped
         vk_exec_pass_end(ex);
         vk_exec_pass_begin(ex);
@@ -3196,7 +3317,7 @@ static int prepare_draw(VkExec *ex, int prim, int32_t count, int restart) {
     // from it and the fields a draw sets are the same (y_flip is always 1): its pipeline is taken without building the
     // state and comparing it with the memo's and the recorded one (3 x 360 bytes). check builds and compares as before.
     int pg = pipe_memo_on() && !ex->chunked ? bim : 0;
-    int pg_hit = pg && D->PM.valid && D->PM.gen == ex->pipe_gen && D->PM.s.vs == vs && D->PM.s.fs == fs &&
+    int pg_hit = pg && D->PM.valid && D->PM.gen == ex->pipe_gen && D->PM.s.vs == vs && D->PM.s.fs == fs && D->PM.s.gs == gsh &&
                  D->PM.s.feedback == fb && D->PM.s.prim == (uint8_t)prim && D->PM.s.depth_minus_w == dmw &&
                  D->PM.s.prim_restart == (uint8_t)(restart != 0);
     VkPipeState s;   // built from pipe unless the generation hit
@@ -3206,7 +3327,7 @@ static int prepare_draw(VkExec *ex, int prim, int32_t count, int restart) {
         sp = &D->PM.s;
     } else {
         MX_CPY(&s, &ex->pipe, sizeof s);
-        s.vs = vs, s.fs = fs;
+        s.vs = vs, s.fs = fs, s.gs = gsh;
         s.feedback = fb;
         s.prim = (uint8_t)prim;
         s.depth_minus_w = dmw;
@@ -3951,9 +4072,14 @@ int vk_exec_bind(VkExec *ex, uint32_t op, const void *payload) {
         gen = 1;
         break;
     }
-    case OP_BIND_SAMP: {   // not read by the bind path: a texture handle carries its sampler id (h >> 20)
+    case OP_BIND_SAMP: {   // read where a shader pairs a separate texture with a separate sampler (sep_handle)
         const p_bind_handles *b = payload;
-        bind_handles(b->stage >= 0 && b->stage < 6 ? ex->samp[b->stage] : NULL, 128, b);
+        uint32_t chg = bind_handles(b->stage >= 0 && b->stage < 6 ? ex->samp[b->stage] : NULL, 128, b);
+        if (chg) {   // any texture slot may be paired with these samplers: every texture descriptor of the stage is stale
+            ex->dirt.tex[b->stage][0] = ex->dirt.tex[b->stage][1] = ~(uint64_t)0;
+            ex->tex_serial++;
+            gen = 1;
+        }
         break;
     }
     case OP_BIND_IMG: {

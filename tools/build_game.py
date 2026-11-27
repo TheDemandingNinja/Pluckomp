@@ -54,8 +54,8 @@ if WIN:
     CXX_FLAGS += ['-idirafter', str(CLANG64 / 'include'), '-idirafter', str(CLANG64 / 'include' / 'vma')]
     LINK_FLAGS += ['-L', str(CLANG64 / 'lib')]
 LINK_LIBS = (['-lbcrypt', '-lsynchronization', '-lntdll', '-lwinmm', '-lvulkan-1', '-lSDL3', '-luser32', '-lgdi32',
-              '-lshell32', '-lole32', '-Wl,-Bstatic', '-lc++', '-Wl,-Bdynamic'] if WIN
-             else ['-lvulkan', '-lSDL3', '-l:libstdc++.a', '-lm', '-ldl'])
+              '-lshell32', '-lole32', '-l:libvpx.a', '-l:libwinpthread.a', '-Wl,-Bstatic', '-lc++', '-Wl,-Bdynamic'] if WIN
+             else ['-lvulkan', '-lSDL3', '-lvpx', '-l:libstdc++.a', '-lm', '-ldl'])
 # Peak commit of one generated-chunk compile at -O1 (TotK Recomp's measurement: 120-180 MiB per ~3 MiB chunk, more for
 # the function tables), with headroom.
 JOB_MEM = 400 * 2**20

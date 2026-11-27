@@ -32,7 +32,7 @@
 - [x] SVC and IPC coverage list for Pikmin 4 ([coverage.md](coverage.md))
 - [x] NVN front end from TotK Recomp with a null back end (logs only): `--frames N` runs to the Nth present (600 pass)
 - [x] Audio services the SDK reaches on the way (`audren:u`, `audout:u`, `hwopus`), silent; CMIF domains in `ipc.c`
-- [ ] A host movie decoder (`movie::Decoder` answers unsupported for now, [coverage.md](coverage.md))
+- [x] A host movie decoder: VP9 with libvpx into the game's texture (`runtime/ov_movie.c`, [coverage.md](coverage.md))
 
 ## Milestone 4 - Picture
 
@@ -52,8 +52,11 @@ patches, frame-ahead sync).
 - [x] Boot to the title state: the boot sequence used to wait forever in `WaitPreSyncBCAT` after the startup logo, a
   race in the game's BCAT pre-sync thread that a nifm request resolving at once exposed; a request now stays on hold for
   100 ms (`runtime/ov_services.c`, docs/coverage.md), and every run reaches `OnMenuTitle` / `MenuTitle` at frame 55
-- [ ] The title screen drawn: the title's background is a VP9 movie (decoder type 3, mode 2) whose `Configure` answers
-  unsupported (`runtime/ov_movie.c`), and the picture stays black; a host VP9 decoder comes next
+- [x] The title screen drawn (`--frames 600 --shot`): the background movie decoded on the host with libvpx
+  (`runtime/ov_movie.c`); textures whose handle the translator packs from a separate texture and a separate sampler,
+  which bound the zero texture before (every UE4 draw: the picture was black from the startup logo on); buffer textures
+  through texel buffer views (UE4's vertex data); and a geometry stage for UE4's volume colour-grading LUT
+- [ ] Colour banding in the title's smooth gradients (sky, fog): steps where the console shows none, cause not found
 - [ ] Vulkan validation layer runs; the recorder thread (`vk_rec.c`)
 
 ## Milestone 5 - Playable

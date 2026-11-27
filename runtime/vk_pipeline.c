@@ -1005,7 +1005,7 @@ static VkDescriptorType descriptor_type(int kind, const GfxShaderRes *r) {
 
 static VkShaderStageFlags stage_bit(int stage) {
     return stage == GFX_STAGE_VS ? VK_SHADER_STAGE_VERTEX_BIT : stage == GFX_STAGE_FS ? VK_SHADER_STAGE_FRAGMENT_BIT
-                                                                                      : VK_SHADER_STAGE_COMPUTE_BIT;
+         : stage == GFX_STAGE_GS ? VK_SHADER_STAGE_GEOMETRY_BIT : VK_SHADER_STAGE_COMPUTE_BIT;
 }
 
 // One past the highest binding a shader uses (1 with no resources: binding 0 is the support buffer).
@@ -1069,6 +1069,7 @@ static int layout_covers(const VkPipeState *s, const Layout *l, uint32_t fs_off,
     uint32_t nv = l->set1 ? l->n0 : l->n;
     int m = module_binding_missing(s->vs, l->b, nv, 0);
     const char *stage = "vertex";
+    if (m < 0 && s->gs) m = module_binding_missing(s->gs, l->b, nv, binding_span(s->vs) - 1), stage = "geometry";
     if (m < 0 && s->fs) {
         m = l->set1 ? module_binding_missing(s->fs, l->b + l->n0, l->n - l->n0, 0) : module_binding_missing(s->fs, l->b, l->n, fs_off);
         stage = "fragment";
@@ -1295,7 +1296,7 @@ static Pipe *pipe_add(const void *key, size_t size, uint64_t h, VkPipeline pipel
 // ---- graphics pipelines
 
 typedef struct {                       // normalized: zero where the state is dynamic or unused
-    const GfxShader *vs, *fs;
+    const GfxShader *vs, *fs, *gs;
     uint32_t color[8], depth, stencil; // VkFormat
     uint8_t n_color, samples, topo_class, minus_w;
     uint8_t clamp, poly_mode, a2c, logic_op;   // logic_op: VkLogicOp + 1 when enabled
@@ -1353,7 +1354,7 @@ uint32_t vk_pipeline_target_wmask(const VkPipeState *s, int i) { return target_w
 
 static void gkey_fill(const VkPipeState *s, GKey *k) {
     memset(k, 0, sizeof *k);
-    k->vs = s->vs, k->fs = s->fs;
+    k->vs = s->vs, k->fs = s->fs, k->gs = s->gs;
     k->indep = (uint8_t)P.indep;
     k->n_color = (uint8_t)target_count(s);
     for (int i = 0; i < k->n_color; i++) k->color[i] = target_format(s->color_fmt[i], NULL, NULL);
@@ -1418,11 +1419,23 @@ static uint32_t vs_union_missing(const VkPipeState *s, GfxShaderIo fin[32]) {
 }
 
 static VkPipeline create_graphics(const VkPipeState *s, const GKey *k, const Layout *l, uint32_t fs_off) {
-    VkShaderModule vm = VK_NULL_HANDLE, fm = VK_NULL_HANDLE;
+    VkShaderModule vm = VK_NULL_HANDLE, fm = VK_NULL_HANDLE, gm = VK_NULL_HANDLE;
     uint64_t vw, fw;
     const uint32_t *vcode = gfx_shader_spirv(s->vs, &vw);
     uint32_t *vpatched = NULL, *fpatched = NULL;
-    if (l->set1) {   // independent layouts: outputs from the vertex shader's union, not from this fragment shader
+    VkPipeline pipe = VK_NULL_HANDLE;
+    // A geometry stage sits between the vertex and fragment stages: its bindings follow the vertex shader's in set 0,
+    // and the fragment shader reads its outputs, so the vertex outputs are not patched for the fragment inputs.
+    if (s->gs) {
+        uint64_t gw;
+        const uint32_t *gcode = gfx_shader_spirv(s->gs, &gw);
+        uint32_t goff = binding_span(s->vs) - 1;
+        uint32_t *g = goff && gcode ? spirv_rebind(gcode, gw, goff) : NULL;
+        if (gcode && (!goff || g)) gm = make_module(g ? g : gcode, gw);
+        free(g);
+        if (!gm) return VK_NULL_HANDLE;
+    }
+    if (l->set1 && !s->gs) {   // independent layouts: outputs from the vertex shader's union, not from this fragment shader
         GfxShaderIo fin[32];
         uint32_t missing = vs_union_missing(s, fin);
         if (missing) {
@@ -1441,7 +1454,7 @@ static VkPipeline create_graphics(const VkPipeState *s, const GKey *k, const Lay
             else if (vout[i].type != fin[i].type)
                 LOG_ONCE("vk_pipeline: varying %d is type %d in the vertex stage, %d in the fragment stage", i, vout[i].type, fin[i].type);
         }
-        if (missing && !l->set1) {
+        if (missing && !l->set1 && !s->gs) {
             uint64_t n2 = 0;
             vpatched = spirv_add_outputs(vcode, vw, missing, fin, &n2);
             if (!vpatched) LOG_ONCE("vk_pipeline: cannot add missing vertex outputs (mask %#x)", missing);
@@ -1464,12 +1477,15 @@ static VkPipeline create_graphics(const VkPipeState *s, const GKey *k, const Lay
     }
     vm = make_module(vcode, vw);
     free(vpatched), free(fpatched);
-    VkPipeline pipe = VK_NULL_HANDLE;
     if (!vm || (s->fs && !fm)) goto out;
 
-    VkPipelineShaderStageCreateInfo stages[2] = {
+    VkPipelineShaderStageCreateInfo stages[3] = {
         {.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, .stage = VK_SHADER_STAGE_VERTEX_BIT, .module = vm, .pName = "main"},
         {.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, .stage = VK_SHADER_STAGE_FRAGMENT_BIT, .module = fm, .pName = "main"}};
+    uint32_t nstages = s->fs ? 2 : 1;
+    if (gm)
+        stages[nstages++] = (VkPipelineShaderStageCreateInfo){.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
+                                                              .stage = VK_SHADER_STAGE_GEOMETRY_BIT, .module = gm, .pName = "main"};
     VkPipelineShaderStageRequiredSubgroupSizeCreateInfo rqv, rqf;
     uint64_t sw;
     const uint32_t *scode = gfx_shader_spirv(s->vs, &sw);   // vcode may be a patched copy that is freed by now
@@ -1527,7 +1543,7 @@ static VkPipeline create_graphics(const VkPipeState *s, const GKey *k, const Lay
                                         .pColorAttachmentFormats = (const VkFormat *)k->color,
                                         .depthAttachmentFormat = (VkFormat)k->depth, .stencilAttachmentFormat = (VkFormat)k->stencil};
     VkGraphicsPipelineCreateInfo pi = {.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO, .pNext = &ri,
-                                       .stageCount = s->fs ? 2 : 1, .pStages = stages, .pVertexInputState = &vi,
+                                       .stageCount = nstages, .pStages = stages, .pVertexInputState = &vi,
                                        .pInputAssemblyState = &ia, .pViewportState = &vp, .pRasterizationState = &rs,
                                        .pMultisampleState = &ms, .pDepthStencilState = &ds, .pColorBlendState = &cb,
                                        .pDynamicState = &dy, .layout = l->layout};
@@ -1547,6 +1563,7 @@ static VkPipeline create_graphics(const VkPipeState *s, const GKey *k, const Lay
 out:
     if (vm) vkDestroyShaderModule(P.device, vm, NULL);
     if (fm) vkDestroyShaderModule(P.device, fm, NULL);
+    if (gm) vkDestroyShaderModule(P.device, gm, NULL);
     return pipe;
 }
 
@@ -2253,15 +2270,22 @@ static Pipe *pipe_miss(const VkPipeState *s, const GKey *k, uint64_t h, int mode
     const char *why = NULL;
     Bindings B = {0};
     Layout *l = NULL;
-    uint32_t span = binding_span(s->vs);
-    if (gfx_shader_stage(s->vs) != GFX_STAGE_VS || (s->fs && gfx_shader_stage(s->fs) != GFX_STAGE_FS)) why = "stage mismatch";
+    // Set 0 holds the vertex stage's bindings, then the geometry stage's moved past them; the fragment stage's follow
+    // in set 0, or make set 1 with independent layouts. span - 1 is the fragment stage's move.
+    uint32_t vspan = binding_span(s->vs), span = vspan + (s->gs ? binding_span(s->gs) - 1 : 0);
+    if (gfx_shader_stage(s->vs) != GFX_STAGE_VS || (s->fs && gfx_shader_stage(s->fs) != GFX_STAGE_FS) ||
+        (s->gs && gfx_shader_stage(s->gs) != GFX_STAGE_GS))
+        why = "stage mismatch";
     else if (k->topo_class == 3) why = "patches need tessellation stages, which are not translated";
     else if (P.indep) {
         Bindings F = {0};
-        if (!add_stage(&B, s->vs, 0) || (s->fs && !add_stage(&F, s->fs, 0))) why = "too many bindings";
+        if (!add_stage(&B, s->vs, 0) || (s->gs && !add_stage(&B, s->gs, vspan - 1)) || (s->fs && !add_stage(&F, s->fs, 0)))
+            why = "too many bindings";
         else if (!(l = layout_pair(&B, &F))) why = "descriptor layout creation failed";
         span = 1;
-    } else if (!add_stage(&B, s->vs, 0) || (s->fs && !add_stage(&B, s->fs, span - 1))) why = "too many bindings";
+    } else if (!add_stage(&B, s->vs, 0) || (s->gs && !add_stage(&B, s->gs, vspan - 1)) ||
+               (s->fs && !add_stage(&B, s->fs, span - 1)))
+        why = "too many bindings";
     else if (!(l = layout_get(&B))) why = "descriptor layout creation failed";
     char lack[128];
     if (!why && !layout_covers(s, l, span - 1, lack, sizeof lack)) why = lack, l = NULL;
@@ -2277,9 +2301,10 @@ static Pipe *pipe_miss(const VkPipeState *s, const GKey *k, uint64_t h, int mode
         rt_log("vk_pipeline: graphics pipeline not built: %s", why);
     } else if (!j) {
         P.stats.graphics++;
-        if (mode != 2) keys_note(s);
+        if (mode != 2 && !s->gs) keys_note(s);   // the key file names vertex and fragment shaders only
     }
     Pipe *p = pipe_add(k, sizeof *k, h, pipe, l, l ? &B : NULL, VK_PIPELINE_BIND_POINT_GRAPHICS, gfx_shader_inputs(s->vs, NULL));
+    if (p && s->gs) p->fast_tried = 1;   // no graphics pipeline library path for a geometry stage: the full build only
     if (!j || !p) {
         free(j);
         return p;

@@ -5,7 +5,8 @@
 - Python 3.12+ in `.venv` (`python -m venv .venv`, then `.venv\Scripts\pip install -r requirements.txt`)
 - MSYS2 UCRT64 Clang and Ninja (`C:\msys64\ucrt64\bin`); generated C uses GNU extensions, so MSVC `cl.exe` is out
 - MSYS2 CLANG64 packages for the Vulkan back end: `mingw-w64-clang-x86_64-vulkan-devel` (headers, loader import
-  library), `-sdl3`, `-vulkan-memory-allocator`, `-shaderc` (`glslc`) and `-spirv-tools` (`spirv-val`).
+  library), `-sdl3`, `-vulkan-memory-allocator`, `-shaderc` (`glslc`) and `-spirv-tools` (`spirv-val`); and `-libvpx`
+  for the movies (VP9, linked statically from `libvpx.a`).
   `tools/build_game.py` reads their headers and libraries from `C:\msys64\clang64` (after the compiler's own headers)
   and copies `SDL3.dll` and `libiconv-2.dll` next to the executable. A Vulkan 1.3 driver is needed to run.
 - .NET 10 SDK and the Visual Studio Build Tools (C++), for the NativeAOT shader translator
